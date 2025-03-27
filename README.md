@@ -17,7 +17,6 @@ A comprehensive toolkit for analyzing energy finance data, focusing on renewable
 │   ├── utils.py           # Utility functions
 │   └── save_figure.py     # Figure saving utilities
 ├── MinFin_Notebook/       # Jupyter notebooks
-│   ├── minfin_notebook.ipynb
 │   └── Financing_baseline_sheet.ipynb
 ├── MinFin_Output/         # Output data and figures
 │   └── figures/          # Generated visualizations
@@ -25,6 +24,7 @@ A comprehensive toolkit for analyzing energy finance data, focusing on renewable
 │   ├── __init__.py
 │   └── test_data_processor.py
 ├── requirements.txt       # Project dependencies
+├── minfin_notebook.ipynb
 ├── README.md             # This file
 └── LICENSE               # Project license
 ```
