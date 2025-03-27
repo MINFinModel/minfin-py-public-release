@@ -2,7 +2,7 @@ import os
 import re
 import plotly.graph_objects as go
 
-def save_figure(fig, output_dir="figures", save_html=True, save_png=True, custom_name=None):
+def save_figure(fig, output_dir="minfin_output/figures", save_html=True, save_png=True, custom_name=None):
     """
     Save a Plotly figure to file(s) with a single function call.
     
@@ -79,7 +79,7 @@ def save_figure(fig, output_dir="figures", save_html=True, save_png=True, custom
     return saved_files
 
 
-def save_all_figures(figures, output_dir="figures", save_html=True, save_png=True):
+def save_all_figures(figures, output_dir="minfin_output/figures", save_html=True, save_png=True):
     """
     Save multiple Plotly figures at once.
     

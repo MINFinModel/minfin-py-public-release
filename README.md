@@ -6,10 +6,27 @@ A comprehensive toolkit for analyzing energy finance data, focusing on renewable
 
 ```
 .
-├── MinFin/                 # Financial baseline analysis module
-├── MinFin_Notebook/        # Jupyter notebooks for analysis
-├── MinFin_Output/          # Output data and results
-└── README.md
+├── data/                   # Source data files
+│   └── MINFin V1.0.0.xlsm  # Excel source files
+├── docs/                   # Documentation
+│   ├── API.md             # API documentation
+│   └── CONTRIBUTING.md     # Contributing guidelines
+├── MinFin/                 # Core Python package
+│   ├── data_processor.py   # Data processing module
+│   ├── high_level_dashboard.py  # Dashboard generation
+│   ├── utils.py           # Utility functions
+│   └── save_figure.py     # Figure saving utilities
+├── MinFin_Notebook/       # Jupyter notebooks
+│   ├── minfin_notebook.ipynb
+│   └── Financing_baseline_sheet.ipynb
+├── MinFin_Output/         # Output data and figures
+│   └── figures/          # Generated visualizations
+├── tests/                 # Test suite
+│   ├── __init__.py
+│   └── test_data_processor.py
+├── requirements.txt       # Project dependencies
+├── README.md             # This file
+└── LICENSE               # Project license
 ```
 
 ## Modules Overview
@@ -46,7 +63,7 @@ cd CCG-Energy-Finance
 
 # Install dependencies
 pip install -r requirements.txt
-``
+```
 
 ## Dependencies
 
