@@ -1,4 +1,4 @@
-# CCG Energy Finance Analysis Toolkit
+# MinFin Energy Finance Analysis Toolkit
 
 A comprehensive toolkit for analyzing energy finance data, focusing on renewable energy projects and infrastructure financing. This repository contains multiple modules for different aspects of energy finance analysis.
 
