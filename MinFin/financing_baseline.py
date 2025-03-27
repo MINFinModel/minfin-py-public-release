@@ -19,18 +19,18 @@ for year in range(2010, 2080):
     
 def get_exchange_rates(target_currency, currency_series,year_series):
     """
-    根据年份和原货币，获取对应的汇率，并转换为目标货币。
+    Get exchange rates based on year and original currency, and convert to target currency.
     
-    参数：
-    year_series: 包含年份的 Pandas Series
-    currency_series: 包含原货币的 Pandas Series
-    target_currency: 目标货币（如 USD）
+    Parameters:
+    year_series: Pandas Series containing years
+    currency_series: Pandas Series containing original currencies
+    target_currency: Target currency (e.g., USD)
     
-    返回：
-    Pandas Series，包含对应的汇率
+    Returns:
+    Pandas Series containing corresponding exchange rates
     """
     # print(year_series)
-    year_series = year_series.astype(int)  # 确保年份是整数
+    year_series = year_series.astype(int)  # Ensure years are integers
     mask = year_series.isin(exchange_rates_by_year.keys()) & currency_series.isin(currency_list)
     # print(mask)
     rates = year_series[mask].map(lambda y: exchange_rates_by_year[y]).combine(currency_series[mask], lambda rates_dict, c: rates_dict.get(c, None))
@@ -58,13 +58,13 @@ class financing_baseline_extractor:
         df_financing_baseline_full=self.df_financing_baseline_full
         starting_row = self.starting_rows['historical baseline']
         starting_col = self.starting_cols['historical baseline']
-        # 获取第一行作为列名
+        # Get the first row as column names
         new_columns = df_financing_baseline_full.iloc[starting_row, starting_col:starting_col+20].values
         
-        # 提取数据（跳过列名行）
+        # Extract data (skip the column names row)
         df_historical = df_financing_baseline_full.iloc[starting_row+1:starting_row+400, starting_col:starting_col+20].copy()
         
-        # 重新设置列名
+        # Reset column names
         df_historical.columns = [x.strip() for x in new_columns]        
         df_historical = df_historical.drop(columns=["Volume in KES", "Volume in USD", "Exchange Rate","Maturity"], errors='ignore').dropna(how='all', axis=0)#.dropna(how='all', axis=1)
         df_historical = self.add_columns_for_other_currencies(df_historical, exchange_rates_by_year)
@@ -72,31 +72,23 @@ class financing_baseline_extractor:
     
     def add_columns_for_other_currencies(self, df, exchange_rates_by_year):
         """
-        计算财务数据，并添加：
+        Calculate financial data and add:
         - volume of finance in currency
         - volume of finance in foreign currency
         - exchange rate to currency
         - exchange rate to foreign currency
         
-        参数：
-        df: 包含交易数据的 DataFrame
-        exchange_rates: 货币汇率 DataFrame，包含 base_currency 到其他货币的汇率
-        base_currency: 基准货币，默认 KES
-        foreign_currency: 外币，通常是 USD
+        Parameters:
+        df: DataFrame containing transaction data
+        exchange_rates: Currency exchange rate DataFrame, including rates from base_currency to other currencies
+        base_currency: Base currency, default KES
+        foreign_currency: Foreign currency, usually USD
         """
         base_currency=self.currency
         foreign_currency=self.foreign_currency
 
-        # 1. 获取当前货币的汇率（相对于 base_currency）
-        # df[f"exchange rate to {base_currency}"] = df["Currency"].apply(lambda row: get_exchange_rate(row, "Currency", "Year"))
-
-        # # 2. 获取当前货币的汇率（相对于 foreign_currency）
-        # df[f"Exchange rate to {foreign_currency}"] = df[f"exchange rate to {base_currency}"].apply(lambda row: get_exchange_rate(row, foreign_currency, "Year"))
-
-        # 3. 计算 volume of finance in currency
         df[f"Volume in {base_currency}"] = df["Volume of Finance"] *get_exchange_rates(base_currency,df["Currency"],df["Year"])
 
-        # 4. 计算 volume of finance in foreign currency（通常 USD）
         df[f"Volume in {foreign_currency}"] = df["Volume of Finance"] *get_exchange_rates(foreign_currency,df["Currency"],df["Year"])
         df[f"Exchange Rate to {base_currency}"] = get_exchange_rates(base_currency,df["Currency"],df["Year"])
         df[f"Exchange Rate to {foreign_currency}"] = get_exchange_rates(foreign_currency,df["Currency"],df["Year"])
@@ -181,14 +173,14 @@ class financing_baseline_extractor:
             
     def get_discount_rate_for_grant_ele(self):
         # discount_rate = historical['Rate'].max(historical.loc[:,'Type of Finance']=='Loan')
-        # 先筛选出 'Type of Finance' 为 'Loan' 的行
+        # First filter rows where 'Type of Finance' is 'Loan'
         loan_data = self.historical[self.historical['Type of Finance'] == 'Loan']
-        # 检查是否存在 'Loan' 类型的融资
+        # Check if there are any 'Loan' type finances
         if not loan_data.empty:
-            # 如果存在，计算 'Rate' 列的最大值
+            # If exists, calculate the maximum value of the 'Rate' column
             discount_rate = loan_data['Rate'].max()
         else:
-            # 如果不存在，使用默认值 10%
+            # If not, use default value 10%
             discount_rate = 0.10
         
         return discount_rate
@@ -273,7 +265,7 @@ class financing_baseline_stats:
     def __init__(self, financing_baseline_extractor, repayment_schedule):
         self.repayment_schedule = repayment_schedule.copy()
         self.historical = financing_baseline_extractor.get_historical()        
-        # 一次性填充多个列
+        # Fill multiple columns at once
         cols_to_copy = ['Financing Source', 'Type of Finance', 'Volume in USD', 'Term', 'Grace period']
         self.repayment_schedule.loc[:, cols_to_copy] = self.historical[cols_to_copy]
 
@@ -407,7 +399,7 @@ class financing_baseline_stats:
         df_final = pd.concat(
         [df_summary, df_equity, df_debt], 
         axis=0, 
-        keys=['Summary', 'Equity', 'Debt']  # 添加的层级索引
+        keys=['Summary', 'Equity', 'Debt']  # adding hierarchical index
         )
         return df_final  
         
@@ -479,3 +471,389 @@ class financing_baseline_stats:
         df_technology_stats.loc[:, 'WACC'] = df_technology_stats.loc[:, 'IRR'] * df_technology_stats.loc[:, 'Equity Share'] + df_technology_stats.loc[:, 'Interest Rate'] * df_technology_stats.loc[:, 'Debt Share']
         df_technology_stats.index.name = "Technology"
         return df_technology_stats
+    
+    def get_technology_financing_requirement(self):
+        """
+        Calculate financing requirement metrics for each technology broken down by source.
+        
+        Returns:
+        -------
+        DataFrame
+            Multi-level indexed DataFrame with financing requirements by technology and source
+            First level: Source (Conc_IFI, Conc_DPS, etc.)
+            Second level: Metric (Debt Equity Share, Average interest rate, etc.)
+        """
+        # Get unique technologies and sources
+        technologies = self.historical['Technology'].unique()
+        sources = ["Conc_IFI", "Conc_DPS", "Comm_Intl", "Comm_Dom", "Average"]
+        
+        # Metrics to calculate
+        metrics = [
+            'Debt Equity Share',
+            'Average interest rate', 
+            'Average grace period (years)', 
+            'Average term of loan (years)',
+            'Average grant element'
+        ]
+        
+        # Create a dictionary to store DataFrames for each source
+        result_dict = {}
+        
+        # First process each regular source (excluding "Average")
+        for source in sources[:-1]:  # Skip "Average" for now
+            # Create a nested dictionary for metrics under this source
+            source_metrics = {}
+            
+            # Process each metric for this source
+            for metric in metrics:
+                # Create DataFrame for this metric and source
+                metric_df = pd.DataFrame(index=technologies, 
+                                        columns=['Debt', 'Equity', 'Total'])
+                
+                # Process each technology for this source and metric
+                for tech in technologies:
+                    tech_data = self.historical[self.historical['Technology'] == tech]
+                    
+                    if tech_data.empty:
+                        continue
+                        
+                    # Filter for this source
+                    source_data = tech_data[tech_data['Financing Source'] == source]
+                    
+                    if source_data.empty:
+                        continue
+                    
+                    # Total volume for this technology and source
+                    total_volume = source_data['Volume in USD'].sum()
+                    
+                    # Calculate debt and equity volumes
+                    debt_volume = source_data[source_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
+                    equity_volume = source_data[source_data['Type of Finance'] == 'Equity']['Volume in USD'].sum()
+                    
+                    # Skip if no volume data
+                    if total_volume == 0:
+                        continue
+                    
+                    # Calculate shares
+                    debt_share = debt_volume / total_volume if total_volume > 0 else 0
+                    equity_share = equity_volume / total_volume if total_volume > 0 else 0
+                    
+                    # Process based on metric type
+                    if metric == 'Debt Equity Share':
+                        metric_df.loc[tech, 'Debt'] = debt_share * 100
+                        metric_df.loc[tech, 'Equity'] = equity_share * 100
+                        metric_df.loc[tech, 'Total'] = 100.0
+                    
+                    elif metric == 'Average interest rate':
+                        # Debt interest rate (weighted by volume)
+                        if debt_volume > 0:
+                            debt_interest = (source_data[source_data['Type of Finance'] == 'Loan']['Rate'] * 
+                                           source_data[source_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
+                            metric_df.loc[tech, 'Debt'] = debt_interest * 100
+                        
+                        # Equity interest rate (weighted by volume)
+                        if equity_volume > 0:
+                            equity_interest = (source_data[source_data['Type of Finance'] == 'Equity']['Rate'] * 
+                                             source_data[source_data['Type of Finance'] == 'Equity']['Volume in USD']).sum() / equity_volume
+                            metric_df.loc[tech, 'Equity'] = equity_interest * 100
+                        
+                        # Total weighted average
+                        metric_df.loc[tech, 'Total'] = (
+                            (debt_interest * debt_volume if debt_volume > 0 else 0) + 
+                            (equity_interest * equity_volume if equity_volume > 0 else 0)
+                        ) / total_volume * 100
+                    
+                    elif metric == 'Average grace period (years)':
+                        # Grace period is only for debt
+                        if debt_volume > 0:
+                            grace_period = (source_data[source_data['Type of Finance'] == 'Loan']['Grace period'] * 
+                                          source_data[source_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
+                            metric_df.loc[tech, 'Debt'] = grace_period
+                            metric_df.loc[tech, 'Total'] = grace_period * debt_share
+                        
+                        metric_df.loc[tech, 'Equity'] = 0.0  # No grace period for equity
+                    
+                    elif metric == 'Average term of loan (years)':
+                        debt_term = 0
+                        equity_term = 0
+                        
+                        # Term for debt
+                        if debt_volume > 0:
+                            debt_term = (source_data[source_data['Type of Finance'] == 'Loan']['Term'] * 
+                                       source_data[source_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
+                            metric_df.loc[tech, 'Debt'] = debt_term
+                        
+                        # Term for equity
+                        if equity_volume > 0:
+                            equity_term = (source_data[source_data['Type of Finance'] == 'Equity']['Term'] * 
+                                         source_data[source_data['Type of Finance'] == 'Equity']['Volume in USD']).sum() / equity_volume
+                            metric_df.loc[tech, 'Equity'] = equity_term
+                        
+                        # Total weighted average
+                        metric_df.loc[tech, 'Total'] = (
+                            (debt_term * debt_volume if debt_volume > 0 else 0) + 
+                            (equity_term * equity_volume if equity_volume > 0 else 0)
+                        ) / total_volume
+                    
+                    elif metric == 'Average grant element':
+                        # Grant element is only for debt
+                        if debt_volume > 0:
+                            # Match historical data with repayment schedule
+                            debt_data_ids = source_data[source_data['Type of Finance'] == 'Loan'].index
+                            
+                            # Get grant elements from repayment schedule for these IDs
+                            grant_elements = []
+                            for idx in debt_data_ids:
+                                if idx < len(self.repayment_schedule):
+                                    grant_element = self.repayment_schedule.loc[idx, 'Grant Element']
+                                    volume = source_data.loc[idx, 'Volume in USD']
+                                    if isinstance(grant_element, (int, float)) and not pd.isna(grant_element):
+                                        grant_elements.append((grant_element, volume))
+                            
+                            # Calculate weighted average
+                            if grant_elements:
+                                total_grant_element = sum(ge * vol for ge, vol in grant_elements)
+                                total_volume_with_ge = sum(vol for _, vol in grant_elements)
+                                weighted_grant_element = total_grant_element / total_volume_with_ge if total_volume_with_ge > 0 else 0
+                                
+                                metric_df.loc[tech, 'Debt'] = weighted_grant_element * 100
+                                metric_df.loc[tech, 'Total'] = weighted_grant_element * debt_share * 100
+                            
+                        metric_df.loc[tech, 'Equity'] = float('nan')  # No grant element for equity
+                
+                # Store this metric's DataFrame in the source_metrics dictionary
+                source_metrics[metric] = metric_df
+            
+            # Combine all metrics for this source into a DataFrame and add it to result_dict
+            source_df = pd.concat(source_metrics, names=['Metric'])
+            result_dict[source] = source_df
+        
+        # Now handle the "Average" source - calculating overall averages
+        source_metrics = {}
+        
+        for metric in metrics:
+            avg_metric_df = pd.DataFrame(index=technologies, columns=['Debt', 'Equity', 'Total'])
+            
+            for tech in technologies:
+                # Get all data for this technology across all sources
+                tech_data = self.historical[self.historical['Technology'] == tech]
+                
+                if tech_data.empty:
+                    continue
+                
+                total_volume = tech_data['Volume in USD'].sum()
+                if total_volume == 0:
+                    continue
+                
+                # Calculate weighted averages across all sources
+                # This varies by metric
+                if metric == 'Debt Equity Share':
+                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
+                    equity_volume = tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD'].sum()
+                    
+                    debt_share = debt_volume / total_volume
+                    equity_share = equity_volume / total_volume
+                    
+                    avg_metric_df.loc[tech, 'Debt'] = debt_share * 100
+                    avg_metric_df.loc[tech, 'Equity'] = equity_share * 100
+                    avg_metric_df.loc[tech, 'Total'] = 100.0
+                
+                elif metric == 'Average interest rate':
+                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
+                    equity_volume = tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD'].sum()
+                    
+                    debt_interest = 0
+                    equity_interest = 0
+                    
+                    if debt_volume > 0:
+                        debt_interest = (tech_data[tech_data['Type of Finance'] == 'Loan']['Rate'] * 
+                                       tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
+                        avg_metric_df.loc[tech, 'Debt'] = debt_interest 
+                    
+                    if equity_volume > 0:
+                        equity_interest = (tech_data[tech_data['Type of Finance'] == 'Equity']['Rate'] * 
+                                         tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD']).sum() / equity_volume
+                        avg_metric_df.loc[tech, 'Equity'] = equity_interest 
+                    
+                    avg_metric_df.loc[tech, 'Total'] = (
+                        (debt_interest * debt_volume if debt_volume > 0 else 0) + 
+                        (equity_interest * equity_volume if equity_volume > 0 else 0)
+                    ) / total_volume * 100 if total_volume > 0 else 0
+                
+                elif metric == 'Average grace period (years)':
+                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
+                    if debt_volume > 0:
+                        grace_period = (tech_data[tech_data['Type of Finance'] == 'Loan']['Grace period'] * 
+                                      tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
+                        avg_metric_df.loc[tech, 'Debt'] = grace_period
+                        avg_metric_df.loc[tech, 'Total'] = grace_period * debt_volume / total_volume
+                    
+                    avg_metric_df.loc[tech, 'Equity'] = 0.0
+                
+                elif metric == 'Average term of loan (years)':
+                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
+                    equity_volume = tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD'].sum()
+                    
+                    debt_term = 0
+                    equity_term = 0
+                    
+                    if debt_volume > 0:
+                        debt_term = (tech_data[tech_data['Type of Finance'] == 'Loan']['Term'] * 
+                                   tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
+                        avg_metric_df.loc[tech, 'Debt'] = debt_term
+                    
+                    if equity_volume > 0:
+                        equity_term = (tech_data[tech_data['Type of Finance'] == 'Equity']['Term'] * 
+                                     tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD']).sum() / equity_volume
+                        avg_metric_df.loc[tech, 'Equity'] = equity_term
+                    
+                    avg_metric_df.loc[tech, 'Total'] = (
+                        (debt_term * debt_volume if debt_volume > 0 else 0) + 
+                        (equity_term * equity_volume if equity_volume > 0 else 0)
+                    ) / total_volume if total_volume > 0 else 0
+                
+                elif metric == 'Average grant element':
+                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
+                    if debt_volume > 0:
+                        # Match historical data with repayment schedule for all sources
+                        debt_data_ids = tech_data[tech_data['Type of Finance'] == 'Loan'].index
+                        
+                        # Get grant elements
+                        grant_elements = []
+                        for idx in debt_data_ids:
+                            if idx < len(self.repayment_schedule):
+                                grant_element = self.repayment_schedule.loc[idx, 'Grant Element']
+                                volume = tech_data.loc[idx, 'Volume in USD']
+                                if isinstance(grant_element, (int, float)) and not pd.isna(grant_element):
+                                    grant_elements.append((grant_element, volume))
+                        
+                        if grant_elements:
+                            total_grant_element = sum(ge * vol for ge, vol in grant_elements)
+                            total_volume_with_ge = sum(vol for _, vol in grant_elements)
+                            weighted_grant_element = total_grant_element / total_volume_with_ge if total_volume_with_ge > 0 else 0
+                            
+                            avg_metric_df.loc[tech, 'Debt'] = weighted_grant_element * 100
+                            debt_share = debt_volume / total_volume
+                            avg_metric_df.loc[tech, 'Total'] = weighted_grant_element * debt_share * 100
+                    
+                    avg_metric_df.loc[tech, 'Equity'] = float('nan')
+            
+            # Store this metric's average DataFrame in the source_metrics dictionary
+            source_metrics[metric] = avg_metric_df
+        
+        # Combine all metrics for the "Average" source and add to result_dict
+        avg_source_df = pd.concat(source_metrics, names=['Metric'])
+        result_dict["Average"] = avg_source_df
+        
+        # Combine all sources into a multi-level DataFrame
+        final_result = pd.concat(result_dict, names=['Source'])
+        
+        # Sort the MultiIndex to fix the PerformanceWarning
+        final_result = final_result.sort_index()
+        
+        return final_result
+    
+    def get_technology_summary_table(self):
+        """
+        Generate a summary table of financing metrics organized by technology.
+        
+        Returns:
+        -------
+        DataFrame
+            A table with technologies as rows and financing metrics as columns.
+            Includes debt/equity shares, interest rates, terms, and other key metrics.
+        """
+        # Get technology financing requirement data
+        tech_financing = self.get_technology_financing_requirement()
+        
+        # Get the list of unique technologies
+        technologies = self.historical['Technology'].unique()
+        
+        # Create a new DataFrame for the summary table
+        summary = pd.DataFrame(index=technologies)
+        
+        # Extract data from the "Average" source (which has aggregated metrics)
+        avg_data = tech_financing.xs('Average', level='Source')
+        
+        # Add debt/equity shares
+        summary['Debt Share (%)'] = avg_data.xs('Debt Equity Share', level='Metric')['Debt']
+        summary['Equity Share (%)'] = avg_data.xs('Debt Equity Share', level='Metric')['Equity']
+        
+        # Add interest rates
+        summary['Debt Interest Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Debt']
+        summary['Equity Return Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Equity']
+        summary['Combined Interest Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Total']
+        
+        # Add loan terms
+        summary['Loan Term (years)'] = avg_data.xs('Average term of loan (years)', level='Metric')['Debt']
+        summary['Grace Period (years)'] = avg_data.xs('Average grace period (years)', level='Metric')['Debt']
+        
+        # Add grant element
+        summary['Grant Element (%)'] = avg_data.xs('Average grant element', level='Metric')['Debt']
+        
+        # Calculate Weighted Average Cost of Capital (WACC)
+        summary['WACC (%)'] = (summary['Debt Interest Rate (%)'] * summary['Debt Share (%)'] / 100 + 
+                             summary['Equity Return Rate (%)'] * summary['Equity Share (%)'] / 100)
+        
+        # Add volume data from technology stats
+        tech_stats = self.get_technology_stats()
+        summary['Volume of Finance (USD)'] = tech_stats['Volume of Finance']
+        
+        # Set technology as the index name
+        summary.index.name = "Technology"
+        
+        return summary
+    
+    def get_technology_financing_by_source(self, technology=None, metric='all'):
+        """
+        Generate a table showing how a specific technology is financed across different sources,
+        or how a specific metric varies across technologies and sources.
+        
+        Parameters:
+        ----------
+        technology : str, optional
+            Filter for a specific technology. If None, includes all technologies.
+        metric : str, optional
+            Filter for a specific metric. Default is 'all' which includes all metrics.
+            Options: 'all', 'Debt Equity Share', 'Average interest rate', 
+                    'Average grace period (years)', 'Average term of loan (years)',
+                    'Average grant element'
+                    
+        Returns:
+        -------
+        DataFrame
+            A table showing financing data by source, filtered by technology and/or metric as specified.
+        """
+        # Define valid metrics
+        valid_metrics = [
+            'Debt Equity Share',
+            'Average interest rate', 
+            'Average grace period (years)', 
+            'Average term of loan (years)',
+            'Average grant element'
+        ]
+        
+        # Get technology financing requirement data
+        tech_financing = self.get_technology_financing_requirement()
+        
+        # Filter by technology if specified
+        if technology is not None:
+            if technology not in self.historical['Technology'].unique():
+                raise ValueError(f"Technology '{technology}' not found in data")
+            tech_financing = tech_financing.xs(technology, level=2, drop_level=False)
+        
+        # Filter by metric if specified
+        if metric != 'all':
+            if metric not in valid_metrics:
+                raise ValueError(f"Metric '{metric}' not valid. Choose from: {valid_metrics} or 'all'")
+            tech_financing = tech_financing.xs(metric, level='Metric')
+        
+        # Reorganize data for better presentation
+        # If we have a specific technology and specific metric (not 'all'), we can reshape
+        if technology is not None and metric != 'all':
+            result = tech_financing.droplevel(2)  # Drop the technology level since it's redundant
+            return result
+        
+        return tech_financing
+    
+    

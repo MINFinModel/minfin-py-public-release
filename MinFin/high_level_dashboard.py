@@ -1,8 +1,13 @@
 from dataclasses import dataclass
-from .utils import *  # 直接导入函数
+from .utils import *  
 from .data_processor import process_funding_baseline
 from .data_processor import get_funding_envelope
 from typing import Union
+
+
+class InProgressError(Exception):
+    """Raised when functionality is still under development."""
+    pass
 
 @dataclass
 class CapitalInjection:
@@ -25,7 +30,7 @@ class EconomicParameters:
 class Scenarios:
     financial_instrument_type: str = "Grant"
     scenario: str = "NetZero"
-    capital_injection: Union[bool, CapitalInjection] = False  # False 表示不进行资本注入；如需注入则传入 CapitalInjection 实例,
+    capital_injection: Union[bool, CapitalInjection] = False  # False means no capital injection; if needed, pass a CapitalInjection instance
     
     @classmethod
     def from_dict(cls, kwargs):
@@ -244,7 +249,7 @@ class high_level_dashboard:
             ]
         
         year_cols = [col for col in repayment_schedule.columns if type(col) == int and int(col) >= self.years[0]]
-        # 对这些列做求和
+        # Sum these columns
         existing_finance_payments = repayment_schedule[year_cols].sum()
         
         df_repayments = pd.DataFrame(index=rows, columns=cols)
@@ -266,7 +271,7 @@ class high_level_dashboard:
     
     def cal_injection_repayments(self,year,projected_average):
         """
-        模拟 Excel 公式：
+        Simulates Excel formula:
         =IFERROR(
             IF(AND(year >= start_year, year < (start_year + term), OR(financing_type="Loan", financing_type="Equity")),
                 (volume / (term - (grace_period - 1)) + volume * interest_rate * ((1 + interest_rate) ** term)),
@@ -275,18 +280,18 @@ class high_level_dashboard:
             0
             )
         
-        参数：
-        year: 当前年份 (对应 Excel 中 B70)
-        start_year: 起始年份 (对应 C48)
-        duration: 持续时间 (对应 C49，公式中未使用)
-        volume: 资金量 (对应 C50)
-        term: 期限 (对应 C36)
-        grace_period: 宽限期 (对应 C35)
-        interest_rate: 利率 (对应 C34)
-        financing_type: 融资类型，应为 "Loan" 或 "Equity" (对应 C51)
+        Parameters:
+        year: Current year (corresponds to Excel cell B70)
+        start_year: Starting year (corresponds to C48)
+        duration: Duration (corresponds to C49, not used in formula)
+        volume: Funding amount (corresponds to C50)
+        term: Term (corresponds to C36)
+        grace_period: Grace period (corresponds to C35)
+        interest_rate: Interest rate (corresponds to C34)
+        financing_type: Financing type, should be "Loan" or "Equity" (corresponds to C51)
         
-        返回：
-        公式计算结果（浮点数），条件不满足或出错时返回 0
+        Returns:
+        Formula calculation result (float), returns 0 if conditions are not met or in case of error
         """
         start_year = self.scenario.capital_injection.start_year
         volume = self.scenario.capital_injection.volume
@@ -295,7 +300,7 @@ class high_level_dashboard:
         interest_rate = projected_average.loc["Average interest rate"]
         
         try:
-            # 条件判断：year在[start_year, start_year + term) 内，且融资类型为 "Loan" 或 "Equity"
+            # Condition check: year is within [start_year, start_year + term) and financing type is "Loan" or "Equity"
             if year >= start_year and year < (start_year + term):
                 result = (volume / (term - (grace_period - 1))) + (volume * interest_rate * ((1 + interest_rate) ** term))
             else:
@@ -314,7 +319,7 @@ class high_level_dashboard:
             
             values = pd.DataFrame(index=[0],columns=cols) 
             for i,year in enumerate(cols):
-                # 公式：当前期 = (前一期 + constant) * factor
+                # Formula: current period = (previous period + constant) * factor
                 if i == 0:
                     next_value = df_debt_stock.loc[sector, year] * (1+ debt_share.loc[(sector,"Average interest rate")])-nz_needs.loc["Debt: "+sector,year]
                 else:    
@@ -407,7 +412,7 @@ class high_level_dashboard:
         investment_need.index = self.years
         year_cols = [col for col in repayment_schedule.columns if type(col) == int and int(col) >= self.years[0]]
 
-        # 对这些列做求和
+        # Sum these columns
         existing_finance_payments = repayment_schedule[year_cols].sum()
         financing_requirement = financing_requirement+existing_finance_payments
         # df_result = pd.concat(
@@ -418,10 +423,10 @@ class high_level_dashboard:
         #         financing_requirement - funding_available
         #     ],
         #     keys=["Investment needs","Funding Availability","Financing requirement","Funding shortfall"],
-        #     axis=0  # 默认也是0，这里写明以便更清晰
+        #     axis=0  # Default is also 0, written here for clarity
         # )
 
-        # # 然后给拼接后的 df_result 改列名（注意要保证列数和 self.years 长度一致）
+        # # Then rename columns for the concatenated df_result (ensure column count matches self.years length)
         # df_result.columns = self.years
 
         return pd.DataFrame({

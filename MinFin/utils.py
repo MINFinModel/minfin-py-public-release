@@ -3,8 +3,8 @@ import pandas as pd
 
 def pmt(rate, nper, pv):
     """
-    模拟 Excel 中的 PMT 函数，不考虑末值和期初支付。
-    如果 rate 为0，则返回 pv/nper，否则返回 pv * rate*(1+rate)**nper/((1+rate)**nper - 1)
+    Simulates Excel's PMT function, without considering final value and payments at the beginning of period.
+    If rate is 0, returns pv/nper, otherwise returns pv * rate*(1+rate)**nper/((1+rate)**nper - 1)
     """
     if rate == 0:
         return -pv / nper
@@ -12,18 +12,18 @@ def pmt(rate, nper, pv):
 
 def cal_loan_needs(df, interest_rate, term, grace, coef1, coef2):
     """
-    参数说明：
-      df: 一个 DataFrame，假定只有一行，列名为年份（例如2025,2026, ...），行值为对应年份的金额
-      interest_rate: 对应 C10（利率）
-      term: 对应 C12（期限），可为非整数
-      grace: 对应 C11（宽限期），可为非整数
-      coef1: 对应 C53
-      coef2: 对应 C9
+    Parameters:
+      df: A DataFrame with a single row, columns are years (e.g., 2025, 2026, ...), values are amounts for each year
+      interest_rate: Corresponds to C10 (interest rate)
+      term: Corresponds to C12 (term), can be non-integer
+      grace: Corresponds to C11 (grace period), can be non-integer
+      coef1: Corresponds to C53
+      coef2: Corresponds to C9
 
-    返回：
-      一个 Series，索引为年份（按升序排列），值为公式计算结果
+    Returns:
+      A Series with years as index (sorted in ascending order), values as calculation results
     """
-    # 计算公式中常用的中间变量
+    # Calculate commonly used intermediate variables in the formula
     nper_total = term - grace + 1
     floor_term = math.floor(term)
     frac_term = term - floor_term
@@ -31,18 +31,18 @@ def cal_loan_needs(df, interest_rate, term, grace, coef1, coef2):
     ceil_grace = math.ceil(grace)
     frac_grace = grace - floor_grace
 
-    # 假定 df 只有一行，取出该行数据（金额）
+    # Assume df has only one row, extract the data (amounts)
     amounts = list(df.iloc[0])
-    # 将 DataFrame 的列名（年份）转换为数字列表
+    # Convert DataFrame column names (years) to a numeric list
     years = [float(col) for col in df.columns]
 
-    # 用来存放每个年份的计算结果
+    # Store calculation results for each year
     results = {}
 
     for g in years:
         # ---------------------
-        # 第一项：-PMT(interest_rate, nper_total, SUMIFS(...))
-        # 条件为：年份在 [ g - floor_term + 1, g - ceil_grace ]
+        # First term: -PMT(interest_rate, nper_total, SUMIFS(...))
+        # Condition: year is in [ g - floor_term + 1, g - ceil_grace ]
         L1 = g - floor_term + 1
         U1 = g - ceil_grace
         sum_val = sum(amt for yr, amt in zip(years, amounts) if L1 <= yr <= U1)
@@ -52,8 +52,8 @@ def cal_loan_needs(df, interest_rate, term, grace, coef1, coef2):
             term1 = 0
 
         # ---------------------
-        # 第二项：IFERROR(-PMT(interest_rate, nper_total, (XLOOKUP(...)* (term - floor_term))),0)
-        # XLOOKUP 查找：key2 = g - ROUNDUP(term,0) + 1，即 g - math.ceil(term) + 1
+        # Second term: IFERROR(-PMT(interest_rate, nper_total, (XLOOKUP(...)* (term - floor_term))),0)
+        # XLOOKUP search: key2 = g - ROUNDUP(term,0) + 1, which is g - math.ceil(term) + 1
         key2 = g - math.ceil(term) + 1
         if key2 in years:
             idx = years.index(key2)
@@ -64,8 +64,8 @@ def cal_loan_needs(df, interest_rate, term, grace, coef1, coef2):
             term2 = 0
 
         # ---------------------
-        # 第三项：IFERROR(-PMT(interest_rate, nper_total, (XLOOKUP(...)* (grace - floor_grace))),0)
-        # XLOOKUP 查找：key3 = g - ROUNDDOWN(grace,0) = g - floor_grace
+        # Third term: IFERROR(-PMT(interest_rate, nper_total, (XLOOKUP(...)* (grace - floor_grace))),0)
+        # XLOOKUP search: key3 = g - ROUNDDOWN(grace,0) = g - floor_grace
         key3 = g - floor_grace
         if key3 in years:
             idx = years.index(key3)
@@ -79,9 +79,9 @@ def cal_loan_needs(df, interest_rate, term, grace, coef1, coef2):
             term3 = 0
 
         # ---------------------
-        # 第四项：
-        #   ( SUMIFS(金额, 条件: 年份 > g - floor_grace 且 <= g)
-        #     + IFERROR( SUMIF(年份, ROUNDDOWN(g - grace,0) + 1, 金额) * (1 - (grace - floor_grace)), 0)
+        # Fourth term:
+        #   ( SUMIFS(amounts, condition: year > g - floor_grace and <= g)
+        #     + IFERROR( SUMIF(year, ROUNDDOWN(g - grace,0) + 1, amount) * (1 - (grace - floor_grace)), 0)
         #   ) * interest_rate
         sum_val_4a = sum(amt for yr, amt in zip(years, amounts) if (yr > (g - floor_grace)) and (yr <= g))
         key4 = math.floor(abs(g - grace)) + 1
@@ -92,43 +92,43 @@ def cal_loan_needs(df, interest_rate, term, grace, coef1, coef2):
             lookup_val4 = 0
         term4 = (sum_val_4a + lookup_val4 * (1 - frac_grace)) * interest_rate
 
-        # 将各项相加，再乘以 coef1 和 coef2
+        # Add all terms together, then multiply by coef1 and coef2
         total = coef1 * coef2*(term1 + term2 + term3 + term4)
         results[g] = total
 
-    # 转换为 Series 并按年份排序返回
+    # Convert to Series and return sorted by year
     result_series = pd.Series(results).sort_index()
     return result_series
     
 def cal_equity_needs(df, interest_rate, term, grace, coef1, coef2):
     """
-    参数说明：
-      df: 一个 DataFrame，假定只有一行，
-          列名为年份（例如：2025, 2026, ...），
-          对应的数值为每年的金额，
-          同时另一行（或另一来源）提供年份信息（例如 B70:AU70）。
-          为简单起见，假设 df 的列名就是年份（对应 B70:AU70），
-          且 df.iloc[0] 为金额数据（对应 B107:AU107）。
-      interest_rate: 对应 D10（利率）
-      term: 对应 D12（期限），公式中 nper = term + 1
-      coef1: 对应 C53
-      coef2: 对应 D9
+    Parameters:
+      df: A DataFrame with a single row,
+          column names are years (e.g., 2025, 2026, ...),
+          corresponding values are amounts for each year,
+          at the same time another row (or another source) provides year information (e.g., B70:AU70).
+          For simplicity, assume df's column names are years (corresponding to B70:AU70),
+          and df.iloc[0] is the amount data (corresponding to B107:AU107).
+      interest_rate: Corresponds to D10 (interest rate)
+      term: Corresponds to D12 (term), in the formula nper = term + 1
+      coef1: Corresponds to C53
+      coef2: Corresponds to D9
 
-    公式翻译：
+    Formula translation:
       = $C$53*$D$9*(
-         IFERROR(-PMT(D10, term+1, SUMIFS(金额, 年份, ">" & (当前年份 - ROUNDDOWN(term,0)), 年份, "<=" & 当前年份)),0)
+         IFERROR(-PMT(D10, term+1, SUMIFS(amount, year, ">" & (current_year - ROUNDDOWN(term,0)), year, "<=" & current_year)),0)
          +
-         IFERROR(-PMT(D10, term+1, SUMIF(年份, ROUNDDOWN(当前年份-term,0)+1, 金额) * (term-ROUNDDOWN(term,0))),0)
+         IFERROR(-PMT(D10, term+1, SUMIF(year, ROUNDDOWN(current_year-term,0)+1, amount) * (term-ROUNDDOWN(term,0))),0)
          )
     
-    返回：
-      一个 Series，索引为年份，值为计算结果
+    Returns:
+      A Series with years as index, values as calculation results
     """
     nper = term + 1
     floor_term = math.floor(term)
     frac_term = term - floor_term
 
-    # 假设 df 的列名即为年份，转换成浮点数列表
+    # Assume df's column names are years, convert to float list
     years = [float(col) for col in df.columns]
     amounts = df.iloc[0]
 
@@ -136,8 +136,8 @@ def cal_equity_needs(df, interest_rate, term, grace, coef1, coef2):
 
     for current_year in years:
         # ---------------------
-        # 第一部分：SUMIFS 部分
-        # 筛选条件：年份 > (当前年份 - ROUNDDOWN(term,0)) 且 年份 <= 当前年份
+        # First part: SUMIFS part
+        # Filter condition: year > (current_year - ROUNDDOWN(term,0)) and year <= current_year
         sumifs_val = sum(amt for yr, amt in zip(years, amounts)
                          if (yr > (current_year - floor_term)) and (yr <= current_year))
         try:
@@ -146,11 +146,11 @@ def cal_equity_needs(df, interest_rate, term, grace, coef1, coef2):
             term1 = 0
 
         # ---------------------
-        # 第二部分：SUMIF 部分
-        # 条件：年份 == ROUNDDOWN(当前年份 - term,0) + 1
+        # Second part: SUMIF part
+        # Condition: year == ROUNDDOWN(current_year - term,0) + 1
         target_year = math.floor(current_year - term) + 1
         sumif_val = 0
-        # 这里我们按条件查找，如果有多个匹配则累加
+        # Here we search by condition, and accumulate if there are multiple matches
         for yr, amt in zip(years, amounts):
             if yr == target_year:
                 sumif_val += amt
@@ -165,17 +165,59 @@ def cal_equity_needs(df, interest_rate, term, grace, coef1, coef2):
     result_series = pd.Series(results).sort_index()
     return result_series
 
+def cal_mirr(cash_flows, finance_rate, reinvest_rate):
+    """
+    Calculate MIRR (Modified Internal Rate of Return)
+    
+    :param cash_flows: List of cash flows (the list should include negative investments and positive returns)
+    :param finance_rate: Financing rate (discount rate)
+    :param reinvest_rate: Reinvestment rate
+    :return: MIRR (Modified Internal Rate of Return)
+    """
+    n = len(cash_flows) - 1  # Calculate number of periods
+    # print(cash_flows)
+    # Calculate FV (Future Value): compound interest calculation of all positive cash flows
+    FV_positive = sum(cash_flows[t] * (1 + reinvest_rate) ** (n - t)
+                      for t in cash_flows.index if cash_flows[t] > 0)
 
+    # Calculate PV (Present Value): discount all negative cash flows
+    PV_negative = sum(cash_flows[t] / (1 + finance_rate) ** t
+                      for t in cash_flows.index if cash_flows[t] < 0)
 
-# 示例：假设你有如下的 DataFrame（列名为年份）
+    # Calculate MIRR
+    if PV_negative == 0:  # Avoid division by zero error
+        return np.nan
+    MIRR = (FV_positive / abs(PV_negative)) ** (1 / n) - 1
+    return MIRR
+
+def calc_donor_mirr(grant_amount, annual_cashflows, donor_discount_rate):
+    """
+    A function example to calculate Donor MIRR.
+    
+    Parameters:
+    - grant_amount: 
+    - annual_cashflows: A list (or array) of annual cash flows related to the Donor.
+    - donor_discount_rate: Donor discount rate
+    
+    Returns:
+    - MIRR for the donor
+    """
+
+    adjusted_cashflows = annual_cashflows.copy()
+    adjusted_cashflows.iloc[0] += grant_amount 
+    
+    # an alternative is to use numpy_financial.mirr for MIRR（installation required: numpy-financial）
+    # !pip install numpy-financial
+    donor_mirr = cal_mirr(adjusted_cashflows, finance_rate=donor_discount_rate, reinvest_rate=donor_discount_rate)
+       
+    return donor_mirr
+
 if __name__ == "__main__":
-    # 构造示例数据，年份从2025到2030，金额随机给出（请替换成实际数据）
     data = {'2025': 1000, '2026': 1100, '2027': 1200, '2028': 1300, '2029': 1400, '2030': 1500}
     df_example = pd.DataFrame([data])
     
-    # 参数示例
-    interest_rate = 0.05  # 比如 5%
-    term = 10.5           # 期限 10.5 年
-    grace = 3.2           # 宽限期 3.2 年
-    coef1 = 1.1           # 系数 C53
-    coef2 = 0.9           # 系数 C9
+    interest_rate = 0.05  
+    term = 10.5           
+    grace = 3.2           
+    coef1 = 1.1           
+    coef2 = 0.9           
