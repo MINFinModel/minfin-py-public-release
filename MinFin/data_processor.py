@@ -124,28 +124,148 @@ def get_melted_currency_df():
     
     return melted
 def load_excel_data(file_path):
+    """
+    Load and extract various data sections from the Definitions sheet of an Excel file.
+    
+    Parameters:
+    -----------
+    file_path : str
+        Path to the Excel file
+        
+    Returns:
+    --------
+    dict
+        A dictionary containing DataFrames with keys from extraction_configs.
+        Keys: 'df_param_constraints', 'df_investment_needs', 'df_financing_baseline',
+              'df_funding_baseline', 'df_scenarios', 'df_currencies', 
+              'df_technologies', 'df_technologies_classification'
+        
+        Usage:
+            data = load_excel_data(file_path)
+            df_technologies = data['df_technologies']
+            # or unpack if needed:
+            df_param_constraints, df_investment_needs, ... = data.values()
+    """
     df_definitions_full = pd.read_excel(file_path, sheet_name="Definitions", engine="openpyxl")
     
-    # Extract different sections
-    df_param_constraints = df_definitions_full.iloc[27:38, 1:3].fillna("").reset_index(drop=True)
-    df_param_constraints.columns = ["Name", "Description"]
+    def _extract_section(df, row_start, row_end, col_start, col_end, 
+                        columns, fill_method="fillna", fill_value=""):
+        """
+        Helper function to extract and process a section from the DataFrame.
+        
+        Parameters:
+        -----------
+        df : DataFrame
+            Source DataFrame
+        row_start, row_end : int
+            Row range (end is exclusive)
+        col_start, col_end : int
+            Column range (end is exclusive)
+        columns : list
+            Column names for the extracted DataFrame
+        fill_method : str
+            Either "fillna" or "dropna"
+        fill_value : str
+            Value to fill NaN with (only used if fill_method="fillna")
+        """
+        section = df.iloc[row_start:row_end, col_start:col_end]
+        
+        if fill_method == "fillna":
+            section = section.fillna(fill_value)
+        elif fill_method == "dropna":
+            section = section.dropna()
+        
+        section = section.reset_index(drop=True)
+        section.columns = columns
+        return section
     
-    df_financing_baseline = df_definitions_full.iloc[22:55, 4:6].fillna("").reset_index(drop=True)
-    df_financing_baseline.columns = ["Name", "Description"]
+    # Define extraction configurations
+    extraction_configs = [
+        {
+            "name": "df_param_constraints",
+            "row_range": (23, 34),
+            "col_range": (1, 3),
+            "columns": ["Name", "Description"],
+            "fill_method": "fillna"
+        },
+        {
+            "name": "df_investment_needs",
+            "row_range": (37, 45),
+            "col_range": (1, 3),
+            "columns": ["Name", "Description"],
+            "fill_method": "dropna"
+        },
+        {
+            "name": "df_financing_baseline",
+            "row_range": (58, 91),
+            "col_range": (1, 3),
+            "columns": ["Name", "Description"],
+            "fill_method": "fillna"
+        },
+        {
+            "name": "df_funding_baseline",
+            "row_range": (48, 56),
+            "col_range": (1, 3),
+            "columns": ["Name", "Description"],
+            "fill_method": "fillna"
+        },
+        {
+            "name": "df_scenarios",
+            "row_range": (23, 26),
+            "col_range": (4, 6),
+            "columns": ["Name", "Description"],
+            "fill_method": "fillna"
+        },
+        {
+            "name": "df_currencies",
+            "row_range": (58, 69),
+            "col_range": (4, 6),
+            "columns": ["Code", "Currency"],
+            "fill_method": "fillna"
+        },
+        {
+            "name": "df_technologies",
+            "row_range": (23, 74),
+            "col_range": (8, 13),
+            "columns": ["Name", "Description", "Technology", "Classification", "Sector"],
+            "fill_method": "dropna"
+        },
+        {
+            "name": "df_technologies_classification",
+            "row_range": (23, 74),
+            "col_range": (14, 18),
+            "columns": ["Technology", "Classification"],
+            "fill_method": "fillna"
+        }
+    ]
     
-    df_funding_baseline = df_definitions_full.iloc[22:31, 7:9].fillna("").reset_index(drop=True)
-    df_funding_baseline.columns = ["Name", "Description"]
+    # Extract all sections
+    extracted_data = {}
+    for config in extraction_configs:
+        df = _extract_section(
+            df_definitions_full,
+            config["row_range"][0], config["row_range"][1],
+            config["col_range"][0], config["col_range"][1],
+            config["columns"],
+            config["fill_method"]
+        )
+        extracted_data[config["name"]] = df
     
-    df_scenarios = df_definitions_full.iloc[23:25, 1:3].fillna("").reset_index(drop=True)
-    df_scenarios.columns = ["Name", "Description"]
+    # Post-process technologies_classification
+    df_technologies_classification = extracted_data["df_technologies_classification"]
+    df_technologies_classification = df_technologies_classification[
+        df_technologies_classification["Technology"] != ""
+    ]
+    extracted_data["df_technologies_classification"] = df_technologies_classification
     
-    df_currencies = df_definitions_full.iloc[33:39, 1:3].fillna("").reset_index(drop=True)
-    df_currencies.columns = ["Code", "Currency"]
+    # Post-process technologies: map Classification
+    df_technologies = extracted_data["df_technologies"]
+    classification_map = df_technologies_classification.set_index("Technology")["Classification"]
+    df_technologies["Classification"] = df_technologies.dropna()["Technology"].map(classification_map)
+    extracted_data["df_technologies"] = df_technologies
     
-    df_technologies = df_definitions_full.iloc[22:56, 10:13].fillna("").reset_index(drop=True)
-    df_technologies.columns = ["Name", "Description", "Classification"]
-
-    return df_param_constraints, df_financing_baseline, df_funding_baseline, df_scenarios, df_currencies, df_technologies
+    # Return dictionary - names come directly from extraction_configs
+    return {config["name"]: extracted_data[config["name"]] for config in extraction_configs}
 
 def process_funding_baseline(df_funding_baseline_full,melted_currency_df=get_melted_currency_df()):
     """
