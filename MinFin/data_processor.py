@@ -3,77 +3,173 @@ import pandas as pd
 import numpy as np
 
 
-class osemosys_extractor:
+class input_extractor:
     def __init__(self,scenario) -> None:
         self.scenario = scenario
         self.starting_rows = {'net_zero': 137,'least_cost': 137}
-        self.starting_cols = {'least_cost': {'variable_cost': 4, 'fixed_cost': 6, 'annual_elec_production': 10,'co2_emission':18}}
+        self.starting_cols = {'least_cost': {'variable_cost': 4, 'fixed_cost': 6, 'co2_emission':18}}
         self.starting_cols['net_zero']= { key:value-1 for key,value in self.starting_cols['least_cost'].items()}
         self.starting_cols[scenario]['carbon_price'] = 16
-    def get_cols(self,name_of_cost,df_osemosys_full):
+    
+    def get_other_inputs(self,name_of_input,df_input_full):
+        '''
+        Get other inputs for a given scenario.
+        '''
         starting_row = self.starting_rows[self.scenario]
         starting_col = self.starting_cols[self.scenario]
-        if name_of_cost in ['year','years','y']:
-            years = df_osemosys_full.iloc[starting_row:starting_row+46, 0:1]
+        if name_of_input in ['year','years','y']:
+            years = df_input_full.iloc[starting_row:starting_row+46, 0:1]
             return years
-        cost = df_osemosys_full.iloc[starting_row:starting_row+46, starting_col[name_of_cost]:starting_col[name_of_cost]+1]  # A10:AH66 in Million
-        cost.reset_index(drop=True, inplace=True)
-        return cost
+        input_df = df_input_full.iloc[starting_row:starting_row+46, starting_col[name_of_input]:starting_col[name_of_input]+1]  # A10:AH66 in Million
+        input_df.fillna(0, inplace=True)
+        input_df.reset_index(drop=True, inplace=True)
+        return input_df
     
     @staticmethod
-    def load_osemosys_input(scenario,df_osemosys_full):
-        starting_rows = {'net_zero': 9,'least_cost': 73}
+    def filter_valid_cols(df, header_row):
+        header_row = header_row.apply(
+            lambda x: (np.nan if isinstance(x, str) and not x.strip()
+                       else x.strip() if isinstance(x, str) else x)
+        )
+        num_named_cols = header_row.notna().sum()
+        df = df.iloc[:, :num_named_cols]
+        df.columns = list(header_row.iloc[:num_named_cols])
+        df.reset_index(drop=True, inplace=True)
+        return df
+    
+    @staticmethod
+    def _build_cost_df(df_input_full, starting_row, col_start, col_end, df_year, n_rows=56):
+        """
+        Extract a cost block for a given column range and append a 'Total' row.
+        """
+        # Slice raw values and header row from the Excel sheet
+        df = df_input_full.iloc[starting_row:starting_row + n_rows, col_start:col_end]
+        header_row = df_input_full.iloc[starting_row - 1, col_start:col_end]
+
+        # Normalise column names and drop unnamed/empty columns
+        df = input_extractor.filter_valid_cols(df, header_row)
+
+        # Replace missing values with zero for downstream arithmetic
+        df = df.fillna(0)
+
+        # Attach the Year column as the first column
+        df = pd.concat([df_year, df], axis=1)
+
+        # Compute and append a 'Total' row across all value columns
+        total_row = pd.DataFrame(df.iloc[:, 1:].sum()).T
+        total_row.insert(0, "Year", "Total")
+        df = pd.concat([df, total_row], ignore_index=True)
+
+        return df
+    
+    @staticmethod
+    def _build_input_blocks(scenario, df_input_full):
+        """
+        Internal helper to build all input blocks for a given scenario.
+        Returns a dict of DataFrames keyed by block name.
+        """
+        starting_rows = {'net_zero': 9, 'least_cost': 73}
         starting_row = starting_rows[scenario]
-        # Extract different sections
-        df_captial_cost = df_osemosys_full.iloc[starting_row:starting_row+56, 0:34]  # A10:AH66 in Million
-        df_captial_cost.columns = ["Year"] + list(df_osemosys_full.iloc[starting_row-1, 1:34])  # Rename columns using the header row
-        df_captial_cost.reset_index(drop=True, inplace=True)
+        n_rows = 56  # number of data rows per scenario block
 
-        df_captial_cost.iloc[:, 1:] = df_captial_cost.iloc[:, 1:].fillna(0)  # Replace NaN with 0
-        # Calculate the total row
-        total_row = pd.DataFrame(df_captial_cost.iloc[:, 1:].sum()).T  # Sum all numerical columns and transpose
-        total_row.insert(0, "Year", "Total")  # Set the "Year" column to "Total"
+        # Shared Year column
+        df_year = (
+            df_input_full
+            .iloc[starting_row:starting_row + n_rows, 0]
+            .reset_index(drop=True)
+            .to_frame(name="Year")
+        )
 
-        # Append the total row to the DataFrame
-        df_captial_cost =pd.concat([df_captial_cost,total_row], ignore_index=True)
-        
-        df_ffe  = df_osemosys_full.iloc[starting_row:starting_row+56, 35:39]  # A10:AH66 in Million
-        df_ffe.columns =  list(df_osemosys_full.iloc[starting_row-1, 35:39])  # Rename columns using the header row
-        df_ffe.reset_index(drop=True, inplace=True)
-        
-        df_ffe.iloc[:, 1:] = df_ffe.iloc[:, 1:].fillna(0)  # Replace NaN with 0
+        # Column ranges
+        capital_start_col = 1
+        capital_end_col = 51
 
-        df_ffe["Total"] = df_ffe.iloc[:, 0:].sum(axis=1)
-        df_ffe["Year"] = df_captial_cost["Year"]
+        ffe_start_col = capital_end_col + 1
+        ffe_end_col = ffe_start_col + 20
 
-        # Calculate the total row
-        total_row = pd.DataFrame(df_ffe.iloc[:, 1:].sum()).T  # Sum all numerical columns and transpose
-        total_row.iloc[:,-1]= "Total" # Set the "Year" column to "Total"
-        df_ffe =pd.concat([df_ffe,total_row], ignore_index=True)
-        df_ffe.set_index("Year", inplace=True, drop=False)
+        elec_production_start_col = ffe_end_col + 2 
+        elec_production_end_col = elec_production_start_col + 50
 
-        return df_captial_cost, df_ffe
+        op_start_col = elec_production_end_col + 1
+        op_end_col = op_start_col + 50
 
-  
-    def get_totals(self,df_osemosys_full):
-        #Load Variable Cost, Fixed Cose, and Annual Electricity
-        # starting_cols = {'least_cost': {'variable_cost': 4, 'fixed_cost': 6, 'elec_production': 10,'co2_emission':18}}
-        # starting_cols['net_zero']= { key:value-1 for key,value in starting_cols['least_cost'].items()}
-       
-        # print(starting_col.keys())
-        # Extract different sections
-        
-        # print(years)
+        potential_generation_start_col = op_end_col + 1
+        potential_generation_end_col = potential_generation_start_col + 50
+
+        block_specs = {
+            "capital_cost": (capital_start_col, capital_end_col),
+            "ffe": (ffe_start_col, ffe_end_col),
+            "elec_production": (elec_production_start_col, elec_production_end_col),
+            "opex": (op_start_col, op_end_col),
+            "potential_generation": (potential_generation_start_col, potential_generation_end_col),
+        }
+
+        blocks = {}
+        for name, (col_start, col_end) in block_specs.items():
+            blocks[name] = input_extractor._build_cost_df(
+                df_input_full,
+                starting_row,
+                col_start,
+                col_end,
+                df_year,
+                n_rows=n_rows,
+            )
+
+        return blocks
+
+    @staticmethod
+    def load_block_for(scenario, df_input_full, block_name):
+        """
+        Return a single input block by name, e.g. 'capital_cost', 'ffe'.
+        """
+        blocks = input_extractor._build_input_blocks(scenario, df_input_full)
+        return blocks[block_name]
+
+    @staticmethod
+    def load_all_blocks_for(scenario, df_input_full):
+        """
+        Return all input blocks as a dict of DataFrames.
+        """
+        return input_extractor._build_input_blocks(scenario, df_input_full)
+
+    @staticmethod
+    def load_all_for(scenario, df_input_full):
+        """
+        return all input blocks as  DataFrames.
+        """
+        blocks = input_extractor.load_all_blocks_for(scenario, df_input_full)
+        return blocks["capital_cost"], blocks["ffe"], blocks["elec_production"], blocks["opex"], blocks["potential_generation"] 
+    
+    @staticmethod
+    def load_osemosys_input(scenario, df_input_full):
+        """
+        Legacy name kept for compatibility. Prefer load_input/load_input_blocks.
+        """
+        blocks = input_extractor.load_all_blocks_for(scenario, df_input_full)
+        return blocks["capital_cost"], blocks["ffe"]
+    
+    def load(self, df_input_full, block_name):
+        """
+        Convenience instance API: load a single block for this extractor's scenario.
+        Default block is 'ffe'.
+        """
+        blocks = input_extractor._build_input_blocks(self.scenario, df_input_full)
+        return blocks[block_name]
+    
+    def load_all(self, df_input_full):
+        return input_extractor.load_all_for(self.scenario, df_input_full)  
+    
+    def get_all_other_inputs(self,df_input_full):
         totals=pd.DataFrame()
         for name in self.starting_cols[self.scenario].keys(): 
-            
-            totals[name] = self.get_cols(name,df_osemosys_full)
+            totals[name] = self.get_other_inputs(name,df_input_full)
 
-        years = self.get_cols('year',df_osemosys_full)
+        years = self.get_other_inputs('year',df_input_full)
         totals.set_index(years.iloc[:,0], inplace=True)
-        # print(years.iloc[0,0])
-        totals['capital_cost'] = self.cal_total_capital(df_osemosys_full,since_year=years.iloc[0,0])["total_capital"].values
+        #process the data
+        totals['capital_cost'] = self.cal_total_capital(df_input_full,since_year=years.iloc[0,0])["total_capital"].values
         totals['total_cost'] = totals['capital_cost']+totals['variable_cost']+totals['fixed_cost']
+        totals['annual_elec_production'] = self.cal_total_elec_production(df_input_full,since_year=years.iloc[0,0])["annual_elec_production"].values
         totals['cost_of_elec_in_pj'] = totals['total_cost']/totals['annual_elec_production']
         totals['cost_of_elec'] = totals['cost_of_elec_in_pj']/3.6 #Convert PJ/USD to TWh/USD
         totals['cost_of_co2'] = totals['co2_emission']*totals['carbon_price'] #Convert PJ/USD to TWh/USD
@@ -81,20 +177,47 @@ class osemosys_extractor:
         totals.index.name = None  # Removes "MINFin" from the index name
         # df_ffe_least_cost.set_index("Year", inplace=True)
         return totals
-    def cal_total_capital(self, df_osemosys_full,since_year=2025):
-        df_capatial_cost_detail ,df_ffe=self.load_osemosys_input(self.scenario,df_osemosys_full)
-        # Convert 'Year' column to numeric (ignoring 'Total' row)
-        df_capatial_cost_detail["Year"] = pd.to_numeric(df_capatial_cost_detail["Year"], errors='coerce')
-        # df_ffe["Year"] = pd.to_numeric(df_ffe["Year"], errors='coerce')
+    def get_totals(self,df_input_full):
+        '''
+        Remain compatibility with the old function name.
+        '''
+        return self.get_all_other_inputs(df_input_full)
+    def calc_total_for_block(self, df_input_full, block_name, since_year=2025, total_col_name=None):
+        """
+        Sum all value columns of a given block from since_year onwards.
+        """
+        df_block = self.load(df_input_full, block_name).copy()
 
-        # Filter for rows where Year > 2025
-        df_filtered = df_capatial_cost_detail[df_capatial_cost_detail["Year"] >= since_year]
-        # df_ffe_filtered = df_ffe[df_ffe["Year"]>=since_year]
+        # Convert Year to numeric for comparison filtering
+        df_block["Year"] = pd.to_numeric(df_block["Year"], errors="coerce")
+
+        # Filter data from since_year onwards
+        df_filtered = df_block[df_block["Year"] >= since_year]
         # Sum across all columns (excluding 'Year')
-        total_captital = df_filtered.iloc[:, 1:].sum(axis=1).to_frame()
-        total_captital.columns=["total_capital"]
-        # df_stacked = pd.concat([total_captital, df_ffe_filtered], axis=1)  # axis=0 → row-wise
-        return total_captital
+        total = df_filtered.iloc[:, 1:].sum(axis=1).to_frame()
+
+        # Set column name
+        if total_col_name is None:
+            total_col_name = f"total_{block_name}"
+        total.columns = [total_col_name]
+
+        return total
+    def cal_total_capital(self, df_input_full, since_year=2025):
+        # Reuse the general function, specifically for capital_cost
+        return self.calc_total_for_block(
+            df_input_full,
+            block_name="capital_cost",
+            since_year=since_year,
+            total_col_name="total_capital",
+        )
+    def cal_total_elec_production(self, df_input_full, since_year=2025):
+        # Reuse the general function, specifically for capital_cost
+        return self.calc_total_for_block(
+            df_input_full,
+            block_name="elec_production",
+            since_year=since_year,
+            total_col_name="annual_elec_production",
+        )
 
 def get_melted_currency_df():
     years = np.arange(2000, 2080)
@@ -228,7 +351,7 @@ def load_excel_data(file_path):
             "row_range": (23, 74),
             "col_range": (8, 13),
             "columns": ["Name", "Description", "Technology", "Classification", "Sector"],
-            "fill_method": "dropna"
+            "fill_method": "fillna"
         },
         {
             "name": "df_technologies_classification",
@@ -281,7 +404,7 @@ def process_funding_baseline(df_funding_baseline_full,melted_currency_df=get_mel
     starting_row = 9
 
     # Extract relevant section
-    df = df_funding_baseline_full.iloc[starting_row:starting_row+90, 0:9].copy()  # +3 to ensure all columns
+    df = df_funding_baseline_full.iloc[starting_row:starting_row+150, 0:9].copy()  # +3 to ensure all columns
     df.columns = df_funding_baseline_full.iloc[starting_row-1, 0:9].fillna(0).tolist()
     
     df.reset_index(drop=True, inplace=True)
@@ -291,28 +414,101 @@ def process_funding_baseline(df_funding_baseline_full,melted_currency_df=get_mel
     
     # Remove duplicate Year columns (keep only one)
     df_final = df#df_final.loc[:, ~df_final.columns.duplicated()]
-    df_final = df_final.drop(columns=["Exchange Rate"], errors="ignore")  # Remove existing exchange rate column if present
+    df_final = df_final.drop(columns=["Exchange Rate"], errors="ignore").fillna(0)  # Remove existing exchange rate column if present
     # print(exchange_rates.melt(id_vars=["Year"], var_name="Currency", value_name="Exchange Rate"))
     # Merge funding baseline with exchange rates based on Year and Currency
     df_final = df_final.merge(melted_currency_df,on=["Year", "Currency"], how="left")
-    df_final["volume_in_usd"] = df_final["Volume (Million)"]*df_final['Govt Share']/df_final['Exchange Rate']
+    
+    mask = df_final["Type"] != "Grant"
+
+    df_final.loc[mask, "volume_in_usd"] = (
+        df_final.loc[mask, "Volume (Million)"] *
+        df_final.loc[mask, "Govt Share"] /
+        df_final.loc[mask, "Exchange Rate"]
+    )
+
+    df_final.loc[~mask, "volume_in_usd"] = (
+        df_final.loc[~mask, "Volume (Million)"] /
+        df_final.loc[~mask, "Exchange Rate"]
+    )
     return df_final
+
+def preprocess_data_for_cagr(col):
+    '''
+    Preprocess the data for CAGR calculation.The logic is in line with MinFin Engergy 251203.xlsm sheet "Definitions" CAGR of annual growth rate.
+    '''
+    s = pd.to_numeric(col, errors="coerce")
+    # Exclude 'average' or other non-numeric years from calculation
+    years = pd.to_numeric([y for y in col.index if str(y).lower() != "average"], errors="coerce")
+    pos = s[s > 0]
+    if len(pos) < 2:
+        return pd.Series(dtype=float)
+    s = s.loc[pos.index.min():pos.index.max()]
+   
+    return s
+
+def cal_annual_cagr(col):
+    '''
+    Calculate the annual CAGR of a given column. The logic is in line with MinFin Engergy 251203.xlsm sheet "Definitions" CAGR of annual growth rate.
+    '''
+    s = preprocess_data_for_cagr(col)
+    if s.empty:
+        return 0.0
+    ratios = s.div(s.shift(1)).iloc[1:]
+
+    ratios = ratios.replace([np.inf, -np.inf], np.nan).dropna()  # IFERROR(...,0)
+    return ratios.mean() - 1                    # AVERAGE(...) - 1
+
+def cal_period_cagr(col):
+    '''
+    Calculate the period CAGR of a given column. The logic is in line with MinFin Engergy 251203.xlsm sheet "Definitions" CAGR of annual growth rate.
+    '''
+    s = preprocess_data_for_cagr(col)
+    if s.empty:
+        return 0.0
+    return (s.iloc[-1] / s.iloc[0]) ** (1/( s.index.max() - s.index.min())) - 1
+
+def log_reg_growth_rate(col):
+    '''
+    This is in line with MinFin Engergy 251203.xlsm sheet.
+    '''
+    s = preprocess_data_for_cagr(col)
+    if s.empty:
+        return 0.0
+    s = s[s > 0]
+    y = s.values.astype(float)
+    x = s.index.astype(float)
+    ln_y = np.log(y)
+
+    # Linear regression ln(y) = a + b x
+    b, a = np.polyfit(x, ln_y, 1)
+
+    return float(np.exp(b) - 1)
 
 def get_funding_envelope(df_funding_baseline):
     funding_types = ["Budget","SOE Gen.", "Grant"]
 
     # Filter relevant data
     df_filtered = df_funding_baseline[df_funding_baseline["Type"].isin(funding_types)]
-
     # Pivot: Sum values for each funding type across years
     df_funding_envelope = df_filtered.pivot_table(index="Type", columns="Year", values="volume_in_usd", aggfunc="sum")
 
     # Transpose: Make years as columns (match the image format)
     df_funding_envelope = df_funding_envelope.T
     # Calculate the yearly average (mean) across all years for each funding type
-    df_funding_envelope.loc["Annual Average"] = df_funding_envelope.fillna(0).mean()
-
+    df_funding_envelope_deep_copy = df_funding_envelope.copy()
     # Calculate the annual growth rate (year-over-year percentage change)
-    df_funding_envelope.loc["Annual Growth Rate"] = (df_funding_envelope.loc[2024].fillna(0)/df_funding_envelope.loc[2010].fillna(0))**(1/(2024-2010))-1 # Convert to percentage
+    # df_funding_envelope.loc["Annual Average"] = df_funding_envelope_deep_copy.fillna(0).mean()
+
+    df_funding_envelope.loc["Annual CAGR"] = df_funding_envelope_deep_copy.apply(
+    cal_annual_cagr, axis=0
+    )
+    df_funding_envelope.loc["Period CAGR"] = df_funding_envelope_deep_copy.apply(
+    cal_period_cagr, axis=0
+    )
+    df_funding_envelope.loc["Log Reg Growth Rate"] = df_funding_envelope_deep_copy.apply(
+    log_reg_growth_rate, axis=0
+    )
     
+
     return df_funding_envelope.fillna(0)
