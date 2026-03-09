@@ -1,7 +1,7 @@
 
 import pandas as pd
 import numpy as np
-
+import warnings
 
 class input_extractor:
     def __init__(self,scenario) -> None:
@@ -146,7 +146,11 @@ class input_extractor:
         Legacy name kept for compatibility. Prefer load_input/load_input_blocks.
         """
         blocks = input_extractor.load_all_blocks_for(scenario, df_input_full)
-        return blocks["capital_cost"], blocks["ffe"]
+        # Set "Year" column as index for all DataFrames in blocks, if present
+        for k, v in blocks.items():
+            if "Year" in v.columns:
+                blocks[k] = v.set_index("Year")
+        return blocks["capital_cost"], blocks["ffe"], blocks["elec_production"]
     
     def load(self, df_input_full, block_name):
         """
@@ -154,7 +158,12 @@ class input_extractor:
         Default block is 'ffe'.
         """
         blocks = input_extractor._build_input_blocks(self.scenario, df_input_full)
-        return blocks[block_name]
+        if "Year" in blocks[block_name].columns:
+            return blocks[block_name].set_index("Year")
+        else:
+            import warnings
+            warnings.warn(f"'Year' column not found in block '{block_name}'. Returning block unmodified.")
+            return blocks[block_name]
     
     def load_all(self, df_input_full):
         return input_extractor.load_all_for(self.scenario, df_input_full)  
@@ -189,7 +198,15 @@ class input_extractor:
         df_block = self.load(df_input_full, block_name).copy()
 
         # Convert Year to numeric for comparison filtering
-        df_block["Year"] = pd.to_numeric(df_block["Year"], errors="coerce")
+        import warnings
+        if "Year" in df_block.columns:
+            df_block["Year"] = pd.to_numeric(df_block["Year"], errors="coerce")
+        elif df_block.index.name == "Year" or (df_block.index.names and "Year" in df_block.index.names):
+            df_block.index = pd.to_numeric(df_block.index, errors="coerce")
+            df_block["Year"] = df_block.index  # 添加year列
+        else:
+            warnings.warn("No 'Year' column or index found. Adding 'Year' based on the current index.")
+            df_block["Year"] = df_block.index
 
         # Filter data from since_year onwards
         df_filtered = df_block[df_block["Year"] >= since_year]
@@ -359,6 +376,13 @@ def load_excel_data(file_path):
             "col_range": (14, 18),
             "columns": ["Technology", "Classification"],
             "fill_method": "fillna"
+        },
+        {
+            "name": "consumer_segments",
+            "row_range": (76, 97),
+            "col_range": (8, 12),
+            "columns": ["Name", "Currency", "Type", "Offtaker"],
+            "fill_method": "fillna"
         }
     ]
     
@@ -417,7 +441,13 @@ def process_funding_baseline(df_funding_baseline_full,melted_currency_df=get_mel
     df_final = df_final.drop(columns=["Exchange Rate"], errors="ignore").fillna(0)  # Remove existing exchange rate column if present
     # print(exchange_rates.melt(id_vars=["Year"], var_name="Currency", value_name="Exchange Rate"))
     # Merge funding baseline with exchange rates based on Year and Currency
-    df_final = df_final.merge(melted_currency_df,on=["Year", "Currency"], how="left")
+    
+    if "Year" in melted_currency_df.columns:
+        df_final = df_final.merge(melted_currency_df, on=["Year", "Currency"], how="left")
+    else:
+        # Assume index contains years, reset index to column for merging
+        temp_currency_df = melted_currency_df.reset_index().rename(columns={melted_currency_df.index.name or "index": "Year"})
+        df_final = df_final.merge(temp_currency_df, on=["Year", "Currency"], how="left")
     
     mask = df_final["Type"] != "Grant"
 
@@ -498,8 +528,9 @@ def get_funding_envelope(df_funding_baseline):
     # Calculate the yearly average (mean) across all years for each funding type
     df_funding_envelope_deep_copy = df_funding_envelope.copy()
     # Calculate the annual growth rate (year-over-year percentage change)
-    # df_funding_envelope.loc["Annual Average"] = df_funding_envelope_deep_copy.fillna(0).mean()
-
+    df_funding_envelope.loc["Annual Average"] = df_funding_envelope_deep_copy.apply(
+        lambda s: (p := s.fillna(0) > 0).any() and s.loc[p.idxmax():p.iloc[::-1].idxmax()].mean() or 0
+    )
     df_funding_envelope.loc["Annual CAGR"] = df_funding_envelope_deep_copy.apply(
     cal_annual_cagr, axis=0
     )

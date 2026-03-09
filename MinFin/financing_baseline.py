@@ -1,4 +1,5 @@
 import time
+import math
 import random
 import numpy as np
 import pandas as pd
@@ -40,12 +41,13 @@ def get_exchange_rates(target_currency, currency_series,year_series):
 class financing_baseline_extractor:
     def __init__(self,df_financing_baseline_full,currency='KES',starting_year=2024,number_of_payments_per_annum=1) -> None:
         self.currency = currency
+        self.years = list(range(2010, 2071))
         self.starting_year = starting_year
         self.foreign_currency = 'USD'
         self.discount_rate = 5.33/100 #'High Level Dashboard'!E34
         self.number_of_payments_per_annum = number_of_payments_per_annum
-        self.starting_rows = {'exchange_rate': 36,'historical baseline': 46}
-        self.starting_cols = {'historical baseline':0}
+        self.starting_rows = {'exchange_rate': 35,'historical baseline': 49}
+        self.starting_cols = {'historical baseline':0,'exchange_rate':2}
         # {'least_cost': {'variable_cost': 4, 'fixed_cost': 6, 'annual_elec_production': 10,'co2_emission':18}}
         # self.starting_cols['net_zero']= { key:value-1 for key,value in self.starting_cols['least_cost'].items()}
         # self.starting_cols[scenario]['carbon_price'] = 16
@@ -53,16 +55,34 @@ class financing_baseline_extractor:
         self.historical = self.get_historical()
         
         
+    def get_exchange_rates_by_year(self):
+        df_financing_baseline_full=self.df_financing_baseline_full
+        starting_row = self.starting_rows['exchange_rate']
+        starting_col = self.starting_cols['exchange_rate'] 
+        new_columns = self.years
         
+        # Extract data (skip the column names row)
+        df_exchange_rates = df_financing_baseline_full.iloc[starting_row:starting_row+10, starting_col:starting_col+len(new_columns)].copy()
+        df_exchange_rates.columns = df_exchange_rates.iloc[0]
+        df_exchange_rates = df_exchange_rates.iloc[1:]
+        df_exchange_rates.set_index('Currency', inplace=True)
+        df_exchange_rates.index.name = "Year"
+        df_exchange_rates.columns.name = None  # 去除列索引的名字
+
+        
+        # df_exchange_rates.columns = new_columns      
+        df_result = df_exchange_rates.T.iloc[:].dropna(how='all', axis=0)
+        df_result.index = df_result.index.astype(int)
+        return df_result
     def get_historical(self):
         df_financing_baseline_full=self.df_financing_baseline_full
         starting_row = self.starting_rows['historical baseline']
         starting_col = self.starting_cols['historical baseline']
         # Get the first row as column names
-        new_columns = df_financing_baseline_full.iloc[starting_row, starting_col:starting_col+20].values
+        new_columns = df_financing_baseline_full.iloc[starting_row, starting_col:starting_col+21].values
         
         # Extract data (skip the column names row)
-        df_historical = df_financing_baseline_full.iloc[starting_row+1:starting_row+400, starting_col:starting_col+20].copy()
+        df_historical = df_financing_baseline_full.iloc[starting_row+1:starting_row+400, starting_col:starting_col+21].copy()
         
         # Reset column names
         df_historical.columns = [x.strip() for x in new_columns]        
@@ -98,7 +118,7 @@ class financing_baseline_extractor:
     
     def cal_repayment_schedule(self,df):
         df=df.reset_index(drop=True)
-        years =  list(range(2010, 2071))
+        years =  self.years
         df_repayment = pd.DataFrame(columns=years)
         df_repayment['Repayment'] = 0
         df_repayment['Name of Project'] = df['Name of Project']
@@ -121,13 +141,13 @@ class financing_baseline_extractor:
                 repay_years = list(df_repayment.loc[df_repayment['Project ID'] == project_id,'repay_years'])[0]
                 if year in repay_years:
                     if year == repay_years[-1]:
-                        df_repayment.loc[df_repayment['Project ID'] == project_id,year] = self.cal_repayment_value(df.loc[project_id,"Rate"],df['Volume of Finance'],df.loc[project_id,"Schedule"],year,repay_years,term=df.loc[project_id,'Term'],grace_period=df.loc[project_id,'Grace period']) 
+                        df_repayment.loc[df_repayment['Project ID'] == project_id,year] = self.cal_repayment_value(df.loc[project_id,"Rate"],df.loc[project_id,'Volume of Finance'],df.loc[project_id,"Schedule"],year,repay_years,term=df.loc[project_id,'Term'],grace_period=df.loc[project_id,'Grace period']) 
                     else:
-                        df_repayment.loc[df_repayment['Project ID'] == project_id,year] = self.cal_repayment_value(df.loc[project_id,"Rate"],df['Volume of Finance'],df.loc[project_id,"Schedule"],year,repay_years,term=df.loc[project_id,'Term'],grace_period=df.loc[project_id,'Grace period']) 
+                        df_repayment.loc[df_repayment['Project ID'] == project_id,year] = self.cal_repayment_value(df.loc[project_id,"Rate"],df.loc[project_id,'Volume of Finance'],df.loc[project_id,"Schedule"],year,repay_years,term=df.loc[project_id,'Term'],grace_period=df.loc[project_id,'Grace period']) 
                 else:
                     df_repayment.loc[df_repayment['Project ID'] == project_id,year] = 0
             # df_repayment.loc[df_repayment[year] == year] = df['Volume in KES'] * (1 + df['Rate']) ** df['Maturity']
-            
+        
         df_repayment['Sum of Repayment'] = df_repayment[years].sum(axis=1).astype(float)
         # print("============================================")
         df_repayment['Market Element'] = self.cal_market_element()
@@ -160,14 +180,19 @@ class financing_baseline_extractor:
             else:
                 return -self.calculate_annuity_payment(interest_rate, term-grace_period+1, volume, fv=0)
         
-        elif scenario in ['Equal Principal Payments (EPP)']:    
+        elif scenario in ['Equal Principal Payments (EPP)','Equal Principal Payments (EPP)']:    
                         
             return -self.calculate_annuity_payment(interest_rate, term-grace_period+1, volume, fv=0)
-        elif scenario in ['EPP with Grace Years for Principal and on Interest']:
-            if year <= repay_years[0]+grace_period:
-                return volume * interest_rate
-            else:
-                return -self.calculate_annuity_payment(interest_rate, term-grace_period+1, volume, fv=0)
+        elif scenario in ['EPP with Grace on Principal & Interest','EPP with Grace on Principal and Interest']:
+            payment = self.epp_with_grace_p_and_i_payment(
+                interest_rate=interest_rate,
+                volume=volume,
+                start_year=repay_years[0],
+                term=term,
+                grace_period=grace_period,
+                year=year,
+            )
+            return payment
         else:
             return None
             
@@ -259,8 +284,49 @@ class financing_baseline_extractor:
     # def cal_general_repayment_statistics(self):
     #     self.weighte_averages = self.cal_weighted_average()
     #     return self.weighte_averages
-    
+    @staticmethod
+    def epp_with_grace_p_and_i_payment(interest_rate, volume, start_year, term, grace_period, year):
+        """
+        This function calculates the payment for the EPP with Grace on Principal and Interest scenario.
+        """
+        print("interest_rate",interest_rate)
+        print("volume",volume)
+        print("start_year",start_year)
+        print("term",term)
+        print("grace_period",grace_period)
+        print("year",year)
+        # If not in repayment period: 0
+        if year < start_year or year > start_year + math.ceil(term) - 1:
+            return 0.0
 
+        # Effective principal after grace period
+        effective_volume = volume * (1.0 + interest_rate) ** math.floor(grace_period)
+
+        # 1) First year of repayment: year = ROUNDDOWN(start_year + grace_period, 0)
+        if year == math.floor(start_year + grace_period):
+            return (
+                (effective_volume / (term - grace_period)) * (math.ceil(grace_period) - grace_period)
+                + effective_volume * interest_rate
+            )
+
+        # 2) Middle years: start_year + grace_period <= year < start_year + term - 1
+        if (year >= start_year + grace_period) and (year < start_year + term - 1.0):
+            principal_annual = effective_volume / (term - grace_period)
+            years_since_start = max(0.0, year - (start_year + grace_period))
+            remaining_principal = effective_volume - principal_annual * years_since_start
+            return principal_annual + remaining_principal * interest_rate
+
+        # 3) Last year: year = start_year + ROUNDUP(term, 0) - 1
+        if year == start_year + math.ceil(term) - 1.0:
+            principal_annual = effective_volume / (term - grace_period)
+            if term - math.floor(term) == 0.0:
+                frac = 1.0
+            else:
+                frac = term - math.floor(term)
+            return principal_annual * frac * (1.0 + interest_rate)
+
+        # Other: 0
+        return 0.0
 class financing_baseline_stats:
     def __init__(self, financing_baseline_extractor, repayment_schedule):
         self.repayment_schedule = repayment_schedule.copy()
@@ -344,10 +410,13 @@ class financing_baseline_stats:
                 (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
                 ][ "Volume in USD"]  
                 
-                df.loc[row, col] = weighted_data.sum() / repayment_schedule[
-                (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
-                ][ "Volume in USD"].sum() 
-                
+                denominator = repayment_schedule[
+                    (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
+                ][ "Volume in USD"].sum()
+                if denominator == 0:
+                    df.loc[row, col] = 0
+                else:
+                    df.loc[row, col] = weighted_data.sum() / denominator
                  
                 if df.loc[row, col] == float('inf'):
                     print("inf",repayment_schedule[

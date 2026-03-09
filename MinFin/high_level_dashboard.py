@@ -108,8 +108,8 @@ class high_level_dashboard:
             "CAGR of real energy price"
         ]
 
-        df_funding_availability.loc[rows[0],"Historical"] = df_funding_envelope.loc["Annual Growth Rate","Budget"]
-        df_funding_availability.loc[rows[1],"Historical"] = df_funding_envelope.loc["Annual Growth Rate","Grant"]
+        df_funding_availability.loc[rows[0],"Historical"] = df_funding_envelope.loc["Annual CAGR","Budget"]
+        df_funding_availability.loc[rows[1],"Historical"] = df_funding_envelope.loc["Annual CAGR","Grant"]
         df_funding_availability.loc[rows[3],"Historical"] = self.economic_params.income_elasticity_of_energy_demand
         df_funding_availability.loc[rows[4],"Historical"] = self.economic_params.cagr_of_real_energy_price
         df_funding_availability.loc[rows[2],"Historical"] = self.cal_cagr_soe_international_cash_generation()
@@ -372,7 +372,7 @@ class high_level_dashboard:
     def get_net_zero_financing_needs_full(self,df_invest_need_summary,df_funding_envelope):
         return self.get_financing_needs_scenario(df_invest_need_summary.loc[:,"Total financing"],df_funding_envelope)
     def get_least_cost_financing_needs_full(self,df_invest_need_summary,df_funding_envelope):
-        return self.get_financing_needs_scenario(df_invest_need_summary.loc[:,("LeastCost","Total")],df_funding_envelope)
+        return self.get_financing_needs_scenario(df_invest_need_summary.loc[:,"Least Cost"],df_funding_envelope)
     @staticmethod
     def get_additional_investment_needs(least_cost_needs,net_zero_needs):
         additional = net_zero_needs - least_cost_needs
