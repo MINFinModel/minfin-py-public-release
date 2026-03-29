@@ -179,6 +179,10 @@ cython_debug/
 ~$*.xlsm
 ~$*.xls
 
+# Only the bundled example workbook is versioned; keep other local .xlsm / extracts untracked
+data/*
+!data/MINFin Energy Example Input File.xlsm
+
 # Excel companion cache folders (8-char hex next to some .xlsm opens)
 data/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]/
 

@@ -6,7 +6,7 @@ A comprehensive toolkit for analyzing energy finance data, focusing on renewable
 
 ```
 .
-├── data/                   # Source data files (place sample .xlsm here)
+├── data/                   # Bundled example `.xlsm` only; other inputs stay local
 ├── docs/                   # Documentation
 │   ├── API.md
 │   └── CONTRIBUTING.md
@@ -84,7 +84,7 @@ from MinFin.high_level_dashboard import hd  # class alias; same as `high_level_d
 
 ## Data Requirements
 
-Input workbooks should match the MINFin Excel structure (Definitions, Financing/Funding baselines, Technology Disag sheets, etc.). Use a sample `.xlsm` under `data/` and set `file_path` in the notebook accordingly.
+Input workbooks should match the MINFin Excel structure (Definitions, Financing/Funding baselines, Technology Disag sheets, etc.). The repository includes **`data/MINFin Energy Example Input File.xlsm`** as the sample; add your own `.xlsm` files under `data/` locally (they are gitignored). Set `file_path` in the notebook accordingly.
 
 ## Contributing
 
