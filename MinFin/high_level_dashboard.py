@@ -44,8 +44,17 @@ class Scenarios:
             )
 
 class high_level_dashboard:
-    def __init__(self, repayment_statistics, 
-                economic_params: EconomicParameters, scenario:Scenarios ,start_year=2025,df_funding_baseline_full=None,least_cost_summary=None,net_zero_summary=None):
+    def __init__(
+        self,
+        repayment_statistics,
+        economic_params: EconomicParameters,
+        scenario: Scenarios,
+        start_year=2025,
+        df_funding_baseline_full=None,
+        least_cost_summary=None,
+        net_zero_summary=None,
+        financing_summary=None,
+    ):
         self.rows = {
             'Debt Equity Share':0,
             'Average interest rate':'Interest rate',
@@ -63,7 +72,7 @@ class high_level_dashboard:
         self.funding_baseline_full = df_funding_baseline_full
         self.least_cost_summary = least_cost_summary
         self.net_zero_summary = net_zero_summary
-        # self.funding_envelop = df_funding_envelope
+        self.financing_summary = financing_summary
     def get_financing_requirements(self,sector):
         repayment_statistics = self.repayment_statistics
         df_financing_requirements = pd.DataFrame(index=self.rows, columns=self.cols)
@@ -158,7 +167,74 @@ class high_level_dashboard:
                     
         return projected_averages
 
-    def get_funding_availability_full(self,df_funding_envelope=None,fossil_fuel_savings=None,df_grants_with_ffs_carbon=None):
+    def get_funding_availability_full(
+        self,
+        df_funding_envelope=None,
+        financing_summary=None,
+        fossil_fuel_savings=None,
+        df_grants_with_ffs_carbon=None,
+    ):
+        """Primary funding availability table (Government Budget, Cashflows, Carbon rows, etc.)."""
+        del fossil_fuel_savings, df_grants_with_ffs_carbon
+        if df_funding_envelope is None:
+            df_funding_baseline_full = self.funding_baseline_full
+            df_funding_baseline = process_funding_baseline(df_funding_baseline_full)
+            df_funding_envelope = get_funding_envelope(df_funding_baseline)
+        if financing_summary is None:
+            financing_summary = self.financing_summary
+        df_funding_availability_lever = self.get_funding_availability_lever(df_funding_envelope)
+        cols = self.years
+        rows = [
+            "Government Budget",
+            "Liabilities Payments",
+            "Cashflows",
+            "Capital Injection",
+            "Carbon Credits",
+            "Carbon Credit Price",
+            "Net CO2 Emissions Savings",
+            "CO2 Emissions Base Scenario",
+            "CO2 Emissions Net Zero Scenario",
+        ]
+        df_funding_availability_full = pd.DataFrame(index=rows, columns=cols)
+
+        if self.scenario.capital_injection:
+            capital_injection = self.scenario.capital_injection
+            df_funding_availability_full.loc[rows[3], :] = [
+                capital_injection.volume / capital_injection.duration
+                if year in range(capital_injection.start_year, capital_injection.start_year + 3)
+                else 0
+                for year in cols
+            ]
+        else:
+            df_funding_availability_full.loc[rows[3], :] = 0
+
+        if self.scenario.capital_injection and self.scenario.capital_injection.type in [
+            "Government Budget",
+            "Government budget",
+            "government budget",
+        ]:
+            rate = df_funding_availability_lever.loc["CAGR of government spending", "Projected"]
+            df_funding_availability_full.loc[rows[0], :] = [
+                df_funding_envelope.loc["Annual Average", "Budget"] * (1 + rate) ** i for i in range(len(cols))
+            ]
+            df_funding_availability_full.loc[rows[0], :] -= df_funding_availability_full.loc[rows[3], :]
+        else:
+            rate = df_funding_availability_lever.loc["CAGR of government spending", "Projected"]
+            df_funding_availability_full.loc[rows[0], :] = [
+                df_funding_envelope.loc["Annual Average", "Budget"] * (1 + rate) ** i for i in range(len(cols))
+            ]
+
+        df_funding_availability_full.loc[rows[2], :] = financing_summary.loc["Cashflows", :]
+        df_carbon_saving = self.get_co2_savings(self.least_cost_summary, self.net_zero_summary)
+        df_funding_availability_full.loc[rows[4], :] = df_carbon_saving.loc["Carbon credit", :]
+        df_funding_availability_full.loc[rows[5], :] = df_carbon_saving.loc["Carbon credit price", :]
+        df_funding_availability_full.loc[rows[6], :] = df_carbon_saving.loc["Net CO2 Saving", :]
+        df_funding_availability_full.loc[rows[7], :] = df_carbon_saving.loc["Least cost", :]
+        df_funding_availability_full.loc[rows[8], :] = df_carbon_saving.loc["Net zero", :]
+        df_funding_availability_full.loc["Total", :] = df_funding_availability_full.loc[rows[0:5], :].sum(axis=0)
+        return df_funding_availability_full
+
+    def get_funding_availability_full_legacy(self,df_funding_envelope=None,fossil_fuel_savings=None,df_grants_with_ffs_carbon=None):
         if df_funding_envelope is None:
             df_funding_baseline_full = self.funding_baseline_full
             df_funding_baseline = process_funding_baseline(df_funding_baseline_full)
@@ -216,12 +292,13 @@ class high_level_dashboard:
             raise InProgressError("This feature is still in progress.")
         else:
             df_funding_availability_full.loc[rows[6],:] = 0
-        df_funding_availability_full.loc[rows[7],:] = self.get_co2_savings(self.least_cost_summary,self.net_zero_summary).loc["Carbon price",:]
+        df_funding_availability_full.loc[rows[7],:] = self.get_co2_savings_legacy(self.least_cost_summary,self.net_zero_summary).loc["Carbon price",:]
         
         df_funding_availability_full.loc["Total",:]= df_funding_availability_full.copy().sum(axis=0)-df_funding_availability_full.loc[rows[3],:]
         
         return df_funding_availability_full
-        
+    
+    
         
     def get_funding_sources(self,dashboard_summary):
         cols = self.years
@@ -240,6 +317,14 @@ class high_level_dashboard:
             df_funding_sources.loc[row,:] =shares.loc[self.sectors[i],"Projected"]*dashboard_summary.loc["Investment needs",:]
         return df_funding_sources
         
+    def get_existing_financing(self, repayment_schedule):
+        year_cols = [
+            col for col in repayment_schedule.columns if str(col).isdigit() and int(col) in self.years
+        ]
+        repayments = repayment_schedule[year_cols].T.sum(axis=1)
+        repayments.index = repayments.index.astype(int)
+        return repayments.sort_index()
+
     def get_repayments(self,repayment_schedule,df_invest_need_summary,df_funding_envelope):
         cols = self.years
         rows = ["Existing finance payments (Million USD)",
@@ -249,21 +334,18 @@ class high_level_dashboard:
             ]
         
         year_cols = [col for col in repayment_schedule.columns if type(col) == int and int(col) >= self.years[0]]
-        # Sum these columns
         existing_finance_payments = repayment_schedule[year_cols].sum()
         
         df_repayments = pd.DataFrame(index=rows, columns=cols)
-        df_repayments.loc[rows[0],:] = existing_finance_payments#Duplicate with summary can be changed in the future
+        df_repayments.loc[rows[0],:] = existing_finance_payments
         df  = self.get_net_zero_financing_needs_full(df_invest_need_summary,df_funding_envelope)
         
-        df_repayments.loc[rows[1],:] =df.loc["Financing Requirements",:] *df_invest_need_summary.loc[:,("NetZero","Total")]/df.loc["Investment needs",:]
-        df_repayments.loc[rows[2],:] = df.loc["Financing Requirements",:]-df_repayments.loc[rows[1],:]#df_invest_need_summary.loc[:,("FFRM","Total")]
+        df_repayments.loc[rows[1],:] =df.loc["Financing Requirements",:] *df_invest_need_summary.loc[:,"Net Zero"]/df.loc["Investment needs",:]
+        df_repayments.loc[rows[2],:] = df.loc["Financing Requirements",:]-df_repayments.loc[rows[1],:]
         if self.scenario.capital_injection and self.scenario.capital_injection.type.lower() in ["Loan", "loan","Equity"]:
-            # raise InProgressError("This feature is still in progress.")
             projected_average =  self.get_projected_average()["Debt"]
             
             df_repayments.loc[rows[3],:] = [self.cal_injection_repayments(year,projected_average) for year in cols]
-            pass
         else:
             df_repayments.loc[rows[3],:] = 0
 
@@ -379,7 +461,7 @@ class high_level_dashboard:
         
         return additional.iloc[0:2]
     @staticmethod
-    def get_co2_savings(least_cost_summary,net_zero_summary):
+    def get_co2_savings_legacy(least_cost_summary,net_zero_summary):
         df_co2_savings = pd.DataFrame()
         df_list = [ 
             least_cost_summary['co2_emission']-net_zero_summary['co2_emission'], 
@@ -388,6 +470,28 @@ class high_level_dashboard:
             (least_cost_summary['co2_emission']-net_zero_summary['co2_emission'])*least_cost_summary['carbon_price'],
         ]
         return pd.concat(df_list,axis=1,keys=["Net CO2 Saving","Least cost", "Net zero","Carbon price"]).T
+
+    @staticmethod
+    def get_co2_savings(least_cost_summary, net_zero_summary):
+        df_list = [
+            (least_cost_summary["co2_emission"] - net_zero_summary["co2_emission"])
+            * least_cost_summary["carbon_credit_price"],
+            least_cost_summary["carbon_credit_price"],
+            least_cost_summary["co2_emission"] - net_zero_summary["co2_emission"],
+            least_cost_summary["co2_emission"],
+            net_zero_summary["co2_emission"],
+        ]
+        return pd.concat(
+            df_list,
+            axis=1,
+            keys=[
+                "Carbon credit",
+                "Carbon credit price",
+                "Net CO2 Saving",
+                "Least cost",
+                "Net zero",
+            ],
+        ).T
     def get_gdp_projection(self,current_gdp=50000,growth_rate=0.05):
         return pd.DataFrame([current_gdp*(1+growth_rate)**i for i in range(len(self.years))],index=self.years,columns=["GDP"]) 
     def get_gdp_percentage(self,dashboard_summary):
@@ -435,3 +539,6 @@ class high_level_dashboard:
                     "Financing requirement": financing_requirement,
                     "Funding shortfall": financing_requirement - funding_available
                 }).T
+
+
+hd = high_level_dashboard

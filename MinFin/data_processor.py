@@ -10,7 +10,8 @@ class input_extractor:
         self.starting_cols = {'least_cost': {'variable_cost': 4, 'fixed_cost': 6, 'co2_emission':18}}
         self.starting_cols['net_zero']= { key:value-1 for key,value in self.starting_cols['least_cost'].items()}
         self.starting_cols[scenario]['carbon_price'] = 16
-    
+        self.starting_cols[scenario]['carbon_credit_price'] = 20
+
     def get_other_inputs(self,name_of_input,df_input_full):
         '''
         Get other inputs for a given scenario.
@@ -203,7 +204,7 @@ class input_extractor:
             df_block["Year"] = pd.to_numeric(df_block["Year"], errors="coerce")
         elif df_block.index.name == "Year" or (df_block.index.names and "Year" in df_block.index.names):
             df_block.index = pd.to_numeric(df_block.index, errors="coerce")
-            df_block["Year"] = df_block.index  # 添加year列
+            df_block["Year"] = df_block.index  # add Year column from index
         else:
             warnings.warn("No 'Year' column or index found. Adding 'Year' based on the current index.")
             df_block["Year"] = df_block.index
@@ -211,7 +212,7 @@ class input_extractor:
         # Filter data from since_year onwards
         df_filtered = df_block[df_block["Year"] >= since_year]
         # Sum across all columns (excluding 'Year')
-        total = df_filtered.iloc[:, 1:].sum(axis=1).to_frame()
+        total = df_filtered.iloc[:, :-1].sum(axis=1).to_frame()
 
         # Set column name
         if total_col_name is None:

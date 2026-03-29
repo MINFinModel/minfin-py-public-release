@@ -6,184 +6,97 @@ A comprehensive toolkit for analyzing energy finance data, focusing on renewable
 
 ```
 .
-├── data/                   # Source data files
-│   └── MINFin V1.0.0.xlsm  # Excel source files
+├── data/                   # Source data files (place sample .xlsm here)
 ├── docs/                   # Documentation
-│   ├── API.md             # API documentation
-│   └── CONTRIBUTING.md     # Contributing guidelines
+│   ├── API.md
+│   └── CONTRIBUTING.md
 ├── MinFin/                 # Core Python package
-│   ├── data_processor.py   # Data processing module
-│   ├── high_level_dashboard.py  # Dashboard generation
-│   ├── utils.py           # Utility functions
-│   └── save_figure.py     # Figure saving utilities
-├── MinFin_Notebook/       # Jupyter notebooks
-│   └── Financing_baseline_sheet.ipynb
-├── MinFin_Output/         # Output data and figures
-│   └── figures/          # Generated visualizations
-├── tests/                 # Test suite
-│   ├── __init__.py
-│   └── test_data_processor.py
-├── requirements.txt       # Project dependencies
-├── minfin_notebook.ipynb
-├── README.md             # This file
-└── LICENSE               # Project license
+│   ├── data_processor.py
+│   ├── financing_baseline.py
+│   ├── high_level_dashboard.py
+│   ├── save_figure.py
+│   ├── utils.py
+│   ├── definitions_io.py       # Definition rows + loaders
+│   ├── investment_needs_extra.py
+│   ├── technology_sheet_io.py  # Technology Disag extraction
+│   ├── funding_allocation.py
+│   ├── offtaker_tariffs.py
+│   ├── repayment_extras.py
+│   ├── disag_tables.py
+│   ├── notebook_dashboard.py   # compat: NotebookHighLevelDashboard → high_level_dashboard
+│   ├── plotting_notebook.py
+│   └── market_revenue.py       # PPA / wholesale revenue split + NZ funding chart
+├── MinFin_Notebook/       # Extra Jupyter notebooks
+│   └── financial_instruments.ipynb
+├── minfin_output/         # Generated figures (HTML/PNG)
+│   └── figures/
+├── tests/
+├── requirements.txt
+├── minfin_notebook.ipynb    # Legacy demo (may be replaced)
+├── addtional_input.ipynb    # Current main workflow notebook
+└── README.md
 ```
+
+The workflow logic that previously lived only in `addtional_input.ipynb` is being moved into the `MinFin` modules above so notebooks can `import` reusable functions. See each module docstring for scope.
 
 ## Modules Overview
 
-### 1. MinFin Module
-A Python module for analyzing and processing financial data related to technology financing. Key features include:
-- Debt and equity financing analysis
-- Interest rate calculations
-- Grant element calculations
-- Repayment schedule generation
-- Technology-specific financing requirements
-- Multi-source financing analysis
+### Core (`MinFin`)
+
+- Debt and equity financing analysis, repayment schedules, grant elements (`financing_baseline.py`, `utils.py`).
+- Excel ingestion (`data_processor.py`), high-level dashboard (`high_level_dashboard.py`).
+- Plot export helpers (`save_figure.py`, `plotting_notebook.py` for Plotly/seaborn charts used in notebooks).
 
 [Detailed MinFin Module Documentation](MinFin/README.md)
 
-### 2. MinFin_Notebook
-Collection of Jupyter notebooks for:
-- Data visualization
-- Analysis workflows
-- Example usage
-- Results presentation
+### Notebooks
 
-### 3. MinFin_Output
--  Figures 
+- **`addtional_input.ipynb`**: Primary analysis workflow; prefer importing from `MinFin` rather than duplicating large `def` blocks.
+- **`minfin_notebook.ipynb`**: Older demo; may be superseded.
+
+### Output
+
+- **`minfin_output/figures/`**: Generated HTML/PNG figures.
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone [repository-url]
-
-# Navigate to the project directory
-cd CCG-Energy-Finance
-
-# Install dependencies
+git clone <repository-url>
+cd MinFin
 pip install -r requirements.txt
+# optional editable install
+pip install -e .
 ```
 
 ## Dependencies
 
-- Python 3.x
-- pandas
-- numpy
-- jupyter
-- matplotlib
-- seaborn
+- Python 3.8+
+- pandas, numpy, matplotlib, seaborn, plotly, openpyxl, jupyter (see `requirements.txt`)
 
 ## Quick Start
 
-1. **Setup Environment**
 ```python
-# Import required modules
 from MinFin.financing_baseline import financing_baseline_extractor, financing_baseline_stats
+from MinFin.high_level_dashboard import hd  # class alias; same as `high_level_dashboard`
 ```
 
-2. **Load and Process Data**
-```python
-# Initialize the extractor
-extractor = financing_baseline_extractor(
-    df_financing_baseline_full,
-    currency='KES',
-    starting_year=2024,
-    number_of_payments_per_annum=1
-)
-
-# Calculate repayment schedule
-repayment_schedule = extractor.cal_repayment_schedule(df)
-
-# Initialize stats analyzer
-fbs = financing_baseline_stats(extractor, repayment_schedule)
-```
-
-3. **Generate Analysis**
-```python
-# Get comprehensive technology summary
-tech_summary = fbs.get_technology_summary_table()
-
-# Analyze financing sources
-institution_shares = fbs.get_institution_shares()
-sector_shares = fbs.get_financing_sector_shares()
-```
+`notebook_dashboard` still re-exports `NotebookHighLevelDashboard` for older imports.
 
 ## Data Requirements
 
-### Input Data Format
-The toolkit expects input data with the following key columns:
-- Technology
-- Financing Source
-- Type of Finance
-- Volume of Finance
-- Currency
-- Year
-- Rate
-- Term
-- Grace period
-- Schedule
-
-### Sample Data
-Sample data files are provided in the `MinFin_Output` directory for reference.
-
-## Analysis Features
-
-### Financial Metrics
-- Debt/Equity ratios
-- Interest rates
-- Grace periods
-- Loan terms
-- Grant elements
-- WACC (Weighted Average Cost of Capital)
-- Financing volumes
-- Market elements
-
-### Reporting Capabilities
-- Technology-specific summaries
-- Financing source analysis
-- Institution share analysis
-- Sector share analysis
-- Repayment statistics
-
-## Usage Examples
-
-### Technology Analysis
-```python
-# Get financing breakdown for specific technology
-solar_financing = fbs.get_technology_financing_by_source(technology="Solar")
-
-# Get specific metric across all technologies
-debt_equity_data = fbs.get_technology_financing_by_source(metric="Debt Equity Share")
-```
-
-### Source Analysis
-```python
-# Get institution shares
-institution_shares = fbs.get_institution_shares()
-
-# Get financing sector shares
-sector_shares = fbs.get_financing_sector_shares()
-
-# Get repayment statistics
-repayment_stats = fbs.get_repayment_statistics()
-```
+Input workbooks should match the MINFin Excel structure (Definitions, Financing/Funding baselines, Technology Disag sheets, etc.). Use a sample `.xlsm` under `data/` and set `file_path` in the notebook accordingly.
 
 ## Contributing
 
-We welcome contributions! Please follow these steps:
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
-## Contact
+## License
 
+See [LICENSE](LICENSE).
 
 ## Acknowledgments
-
 
 ## Version History
 
 - v0.0.1beta: Initial release
+- Ongoing: Notebook logic migrated into `MinFin` submodules for reuse and testing.

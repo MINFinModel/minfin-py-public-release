@@ -30,10 +30,10 @@ def get_exchange_rates(target_currency, currency_series,year_series):
     Returns:
     Pandas Series containing corresponding exchange rates
     """
-    # print(year_series)
+    # #print(year_series)
     year_series = year_series.astype(int)  # Ensure years are integers
     mask = year_series.isin(exchange_rates_by_year.keys()) & currency_series.isin(currency_list)
-    # print(mask)
+    # #print(mask)
     rates = year_series[mask].map(lambda y: exchange_rates_by_year[y]).combine(currency_series[mask], lambda rates_dict, c: rates_dict.get(c, None))
     target_rates = year_series[mask].map(lambda y: exchange_rates_by_year[y].get(target_currency, 1))
     return  target_rates/rates
@@ -67,7 +67,7 @@ class financing_baseline_extractor:
         df_exchange_rates = df_exchange_rates.iloc[1:]
         df_exchange_rates.set_index('Currency', inplace=True)
         df_exchange_rates.index.name = "Year"
-        df_exchange_rates.columns.name = None  # 去除列索引的名字
+        df_exchange_rates.columns.name = None  # drop column index name
 
         
         # df_exchange_rates.columns = new_columns      
@@ -134,10 +134,10 @@ class financing_baseline_extractor:
         df_repayment['repay_years'] = repay_years_list
         df_repayment['Project ID'] = df.index
         for year in range(2010, 2071):
-            # print(df['Volume in KES'])
+            # #print(df['Volume in KES'])
             for project_id in df.index:
-                # print( 2020 in list(df_repayment.loc[df_repayment['Project ID'] == project_id,'repay_years'])[0])
-                # print('==',list(df_repayment.loc[df_repayment['Project ID'] == project_id,'repay_years'])[0])
+                # #print( 2020 in list(df_repayment.loc[df_repayment['Project ID'] == project_id,'repay_years'])[0])
+                # #print('==',list(df_repayment.loc[df_repayment['Project ID'] == project_id,'repay_years'])[0])
                 repay_years = list(df_repayment.loc[df_repayment['Project ID'] == project_id,'repay_years'])[0]
                 if year in repay_years:
                     if year == repay_years[-1]:
@@ -149,16 +149,16 @@ class financing_baseline_extractor:
             # df_repayment.loc[df_repayment[year] == year] = df['Volume in KES'] * (1 + df['Rate']) ** df['Maturity']
         
         df_repayment['Sum of Repayment'] = df_repayment[years].sum(axis=1).astype(float)
-        # print("============================================")
+        # #print("============================================")
         df_repayment['Market Element'] = self.cal_market_element()
         df_repayment['Grant Element'] = self.cal_grant_element()
-        # print('term',df['Term'].astype(float),df['Term'].astype(float).replace(0,100000))
+        # #print('term',df['Term'].astype(float),df['Term'].astype(float).replace(0,100000))
         df_repayment['Average Annual Payment']= df_repayment['Sum of Repayment'] /df['Term'].astype(float)#.replace(0,100000)
         df_repayment['Average Annual Payment'] = df_repayment['Average Annual Payment'].replace([np.inf, -np.inf], np.nan).fillna(0)
         return df_repayment.reset_index(drop=True)
     def cal_repayment_value(self,interest_rate,volume,scenario,year,repay_years,term=0,grace_period=0):
-        # print(type(scenario),scenario)
-        # print(type(interest_rate),interest_rate)
+        # #print(type(scenario),scenario)
+        # #print(type(interest_rate),interest_rate)
         if scenario in ['Equity']:
 
              return volume * interest_rate 
@@ -234,7 +234,7 @@ class financing_baseline_extractor:
         factor2 = 1 / ((1 + d) ** (number_of_payments * (loan_term + grace_period)))
         denominator = d * number_of_payments * loan_term #+ grace_period) - number_of_payments * grace_period)
         denominator = denominator.where(denominator != 0, 1)
-        # print(interest_rate,grace_period,loan_term)
+        # #print(interest_rate,grace_period,loan_term)
         term2 = 1 - ((factor1 - factor2) / denominator)
 
         epp_grant_element = pd.DataFrame(term1 * term2)
@@ -243,7 +243,7 @@ class financing_baseline_extractor:
         grant_element = pd.DataFrame(columns=['Grant Element'])
         
         factor = pd.DataFrame([1 if "EPP" in t else 0 for t in financing_schedule_type])
-        # print(factor)
+        # #print(factor)
         grant_element['Grant Element'] = epp_grant_element*factor + lump_grant_element*(1-factor)
 
         grant_element['Grant Element'] = np.where(financing_schedule_type.str.contains("Equity"), "Equity", grant_element['Grant Element'])
@@ -278,7 +278,7 @@ class financing_baseline_extractor:
     def select_grant_element(index,schedule_type,epp_grant_element,lump_grant_element):
         
         if "Equity" in schedule_type:
-            # print('Equity')
+            # #print('Equity')
             return "Equity"        
         
     # def cal_general_repayment_statistics(self):
@@ -289,12 +289,12 @@ class financing_baseline_extractor:
         """
         This function calculates the payment for the EPP with Grace on Principal and Interest scenario.
         """
-        print("interest_rate",interest_rate)
-        print("volume",volume)
-        print("start_year",start_year)
-        print("term",term)
-        print("grace_period",grace_period)
-        print("year",year)
+        #print("interest_rate",interest_rate)
+        #print("volume",volume)
+        #print("start_year",start_year)
+        #print("term",term)
+        #print("grace_period",grace_period)
+        #print("year",year)
         # If not in repayment period: 0
         if year < start_year or year > start_year + math.ceil(term) - 1:
             return 0.0
@@ -456,12 +456,12 @@ class financing_baseline_stats:
         cols = df.columns
         rows = self.rows
         for index, col in enumerate(cols[1:]):
-            # print(index,col)
+            # #print(index,col)
             df.iloc[0, index+1] = (df[col][1:]*df['Volume (USD)'][1:]).sum()/df['Volume (USD)'][1:].sum()
-            #  print(df.iloc[1, index+1])
+            #  #print(df.iloc[1, index+1])
         return df
     def get_repayment_statistics(self):
-        # print(self.cal_summary_stats().columns)
+        # #print(self.cal_summary_stats().columns)
         df_summary = self.add_weighted_average(self.cal_summary_stats())
         df_equity = self.add_weighted_average(self.cal_equity_debt_stats())
         df_debt = self.add_weighted_average(self.cal_equity_debt_stats(type_of_finance='Loan'))
@@ -508,7 +508,7 @@ class financing_baseline_stats:
                 ]
         repayment_schedule = self.repayment_schedule
         df_financing_sector_shares = pd.DataFrame(index=rows)
-        # print(self.historical.columns)
+        # #print(self.historical.columns)
         for row in rows: 
             
             df_financing_sector_shares.loc[row,'Share'] = repayment_schedule[(self.historical['Financing Sector'] == row) | (self.historical['Financing Source'] == row)

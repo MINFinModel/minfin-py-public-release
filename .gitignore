@@ -179,3 +179,9 @@ cython_debug/
 ~$*.xlsm
 ~$*.xls
 
+# Excel companion cache folders (8-char hex next to some .xlsm opens)
+data/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]/
+
+# Local extraction scratch (safe to delete)
+_extract_temp/
+_write_modules.py

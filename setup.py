@@ -11,6 +11,7 @@ setup(
         "seaborn>=0.11.0",
         "openpyxl>=3.0.0",
         "xlrd>=2.0.1",
+        "plotly>=5.0.0",
     ],
     python_requires=">=3.8",
 ) 
