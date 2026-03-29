@@ -1,4 +1,4 @@
-"""Detailed repayment and interest-cost calculations (extracted from addtional_input notebook workflow)."""
+"""Detailed repayment and interest-cost calculations (extracted from minfin_notebook workflow)."""
 
 
 import numpy as np

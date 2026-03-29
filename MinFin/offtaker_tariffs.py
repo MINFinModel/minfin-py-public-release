@@ -1,4 +1,4 @@
-"""Offtaker, tariff, and generation-purchase utilities (extracted from addtional_input notebook workflow)."""
+"""Offtaker, tariff, and generation-purchase utilities (extracted from minfin_notebook workflow)."""
 
 import numpy as np
 import pandas as pd

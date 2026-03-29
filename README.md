@@ -32,12 +32,11 @@ A comprehensive toolkit for analyzing energy finance data, focusing on renewable
 │   └── figures/
 ├── tests/
 ├── requirements.txt
-├── minfin_notebook.ipynb    # Legacy demo (may be replaced)
-├── addtional_input.ipynb    # Current main workflow notebook
+├── minfin_notebook.ipynb    # Main analysis workflow (Excel + MinFin package)
 └── README.md
 ```
 
-The workflow logic that previously lived only in `addtional_input.ipynb` is being moved into the `MinFin` modules above so notebooks can `import` reusable functions. See each module docstring for scope.
+Workflow logic is implemented in the `MinFin` package; `minfin_notebook.ipynb` orchestrates parameters, data loading, and plots. Prefer `from MinFin.<module> import ...` rather than duplicating large `def` blocks. Older notebook copies can stay under `legacy/` locally (not tracked).
 
 ## Modules Overview
 
@@ -51,8 +50,8 @@ The workflow logic that previously lived only in `addtional_input.ipynb` is bein
 
 ### Notebooks
 
-- **`addtional_input.ipynb`**: Primary analysis workflow; prefer importing from `MinFin` rather than duplicating large `def` blocks.
-- **`minfin_notebook.ipynb`**: Older demo; may be superseded.
+- **`minfin_notebook.ipynb`**: Primary analysis workflow; imports from `MinFin` for calculations and figures.
+- **`MinFin_Notebook/`**: Extra topic notebooks (e.g. financial instruments).
 
 ### Output
 

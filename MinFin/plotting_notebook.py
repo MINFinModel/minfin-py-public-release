@@ -1,4 +1,4 @@
-"""Plotly / seaborn helpers used by the additional_input notebook workflow."""
+"""Plotly / seaborn helpers used by the minfin_notebook workflow."""
 
 from __future__ import annotations
 

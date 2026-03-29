@@ -186,6 +186,9 @@ data/*
 # Excel companion cache folders (8-char hex next to some .xlsm opens)
 data/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]/
 
+# Old notebook snapshots (keep locally if needed; not versioned)
+legacy/
+
 # Local extraction scratch (safe to delete)
 _extract_temp/
 _write_modules.py
