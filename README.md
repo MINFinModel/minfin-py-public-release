@@ -95,6 +95,8 @@ See [LICENSE](LICENSE).
 
 ## Acknowledgments
 
+This project was developed with support from the Climate Compatible Growth (CCG) programme.
+
 ## Version History
 
 - v0.0.1beta: Initial release
