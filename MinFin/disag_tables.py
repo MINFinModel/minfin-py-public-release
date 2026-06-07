@@ -49,10 +49,21 @@ def sum_tech_params_by_segment(
 
 
 def _sum_tech_params(tech_dataframes: dict, column_name: str) -> pd.Series:
-    return pd.concat(
-        [tech_dataframes[t][column_name].fillna(0) for t in tech_dataframes],
-        axis=1,
-    ).sum(axis=1)
+    """Sum *column_name* across all tech frames; skip frames where the column is missing.
+
+    Some technologies in NEW INFRASTRUCTURE may not get a fully populated frame (e.g. no
+    OSeMOSYS row in INVESTMENT PLAN, so no ``cashflow`` / ``opex`` is computed). In that
+    case those frames are skipped instead of raising ``KeyError``.
+    """
+    series = [
+        tech_dataframes[t][column_name].fillna(0)
+        for t in tech_dataframes
+        if column_name in tech_dataframes[t].columns
+    ]
+    if not series:
+        idx = next(iter(tech_dataframes.values())).index if tech_dataframes else pd.RangeIndex(0)
+        return pd.Series(0.0, index=idx)
+    return pd.concat(series, axis=1).sum(axis=1)
 
 
 @dataclass

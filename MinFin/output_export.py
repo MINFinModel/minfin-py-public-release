@@ -1,0 +1,629 @@
+"""Helpers for exporting notebook outputs to Excel workbooks."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterable, Optional
+
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+
+from MinFin.offtaker_tariffs import _classify_segment, _get_tech_class
+from MinFin.technology_sheet_io import PURE_INPUT_STATIC_FIELD_SOURCES
+
+
+RAW_INPUT_COLUMNS = [
+    "Scenario",
+    "Variable",
+    "Dim1",
+    "Dim2",
+    "Dim3",
+    "Dim4",
+    "Dim5",
+    "Dim6",
+    "Dim7",
+    "Dim8",
+    "Dim9",
+    "Dim10",
+    "ResultValue",
+]
+
+FINANCING_SOURCES = ("Comm_Intl", "Comm_Dom", "Conc_IFI", "Conc_DPS")
+
+PPA_INPUT_VARIABLES = {
+    name
+    for name, (sheet, _var) in PURE_INPUT_STATIC_FIELD_SOURCES.items()
+    if sheet == "PPA REVENUE"
+} | {"ppa_currency"}
+
+PPA_COMPUTED_VARIABLES = {
+    "total_ppa_revenue",
+    "ppa_met_generation",
+    "ppa_direct_offtaker_share",
+}
+
+WHOLESALE_COMPUTED_VARIABLES = {
+    "whole_sale_generation",
+    "total_wholesale_revnue",
+    "sale_price",
+}
+
+NETWORK_SEGMENT_VARIABLES = {
+    "power_purchased",
+    "tariff",
+    "capacity_purchased",
+    "capacity_tariff",
+    "power_purchase_cost",
+}
+
+INVESTMENT_ALLOCATION_PREFIXES = ("local_currency_", "foreign_currency_")
+
+# Legacy notebook columns used spaces; canonical export names use underscores.
+CANONICAL_VARIABLE_ALIASES: dict[str, str] = {
+    "power purchased": "power_purchased",
+    "capacity purchased": "capacity_purchased",
+    "capacity tariff": "capacity_tariff",
+}
+
+INVESTMENT_BLOCK_VARIABLES = (
+    "capital_cost",
+    "elec_production",
+    "potential_generation",
+    "opex",
+    "ffe",
+    "co2_emission",
+    "emission_savings",
+    "carbon_price",
+)
+
+# Computed outputs inherit units from related workbook variables when possible.
+COMPUTED_VARIABLE_UNIT_SOURCES: dict[str, str] = {
+    "investment_need": "capital_cost",
+    "total_grant_amount": "total_grant_amount",
+    "total_generation": "ppa_contracted_generation",
+    "ppa_met_generation": "ppa_contracted_generation",
+    "whole_sale_generation": "ppa_contracted_generation",
+    "ppa_direct_offtaker_share": "ppa_standard_offtaker_share",
+    "total_ppa_revenue": "total_grant_amount",
+    "total_wholesale_revnue": "total_grant_amount",
+    "sale_price": "ppa_standard_tariff",
+    "redispatch_compensation": "total_grant_amount",
+    "opex": "opex",
+    "power_purchased": "ppa_contracted_generation",
+    "tariff": "ppa_standard_tariff",
+    "capacity_purchased": "ppa_contracted_capacity",
+    "capacity_tariff": "ppa_capacity_fee",
+    "power_purchase_cost": "total_grant_amount",
+    "corporate_tax_expenses": "total_grant_amount",
+    "interest_cost": "total_grant_amount",
+    "cashflow": "total_grant_amount",
+    "Financing Requirement": "total_grant_amount",
+}
+
+DEFAULT_VARIABLE_UNITS: dict[str, str] = {
+    "investment_need": "Mn USD",
+    "total_generation": "GWh/Year",
+    "total_grant_amount": "Mn USD",
+    "total_ppa_revenue": "Mn USD",
+    "ppa_met_generation": "GWh/Year",
+    "whole_sale_generation": "GWh/Year",
+    "total_wholesale_revnue": "Mn USD",
+    "sale_price": "USD/kWh",
+    "redispatch_compensation": "Mn USD",
+    "opex": "Mn USD",
+    "power_purchased": "GWh/Year",
+    "tariff": "USD/kWh",
+    "capacity_purchased": "MW",
+    "capacity_tariff": "Mn USD/MW",
+    "power_purchase_cost": "Mn USD",
+    "corporate_tax_expenses": "Mn USD",
+    "interest_cost": "Mn USD",
+    "cashflow": "Mn USD",
+    "Financing Requirement": "Mn USD",
+}
+
+
+def _normalize_years(years: Iterable | None, values: list | tuple | pd.Series) -> list:
+    if years is None:
+        return list(range(len(values)))
+    years_list = list(years)
+    if len(years_list) >= len(values):
+        return years_list[: len(values)]
+    return years_list + list(range(len(years_list), len(values)))
+
+
+def _values_are_meaningful(values: list | tuple | pd.Series) -> bool:
+    """True when at least one value is non-null and non-zero."""
+    series = pd.to_numeric(pd.Series(list(values)), errors="coerce")
+    if series.notna().sum() == 0:
+        return False
+    return bool((series.fillna(0) != 0).any())
+
+
+def _is_zero_currency_placeholder(variable: str, values: list | tuple | pd.Series) -> bool:
+    if variable != "ppa_currency":
+        return False
+    return not _values_are_meaningful(values)
+
+
+def _is_wholesale_variable(variable: str) -> bool:
+    return "_share_" in variable or "_sale_price_" in variable
+
+
+def _is_investment_allocation_variable(variable: str) -> bool:
+    return variable.startswith(INVESTMENT_ALLOCATION_PREFIXES)
+
+
+def _canonical_variable_name(variable: str) -> str:
+    return CANONICAL_VARIABLE_ALIASES.get(str(variable).strip(), str(variable).strip())
+
+
+def _iter_canonical_tech_columns(tech_df: pd.DataFrame) -> list[tuple[str, str]]:
+    """Return (canonical_name, source_column) pairs; later columns win on alias clashes."""
+    mapping: dict[str, str] = {}
+    for column in tech_df.columns:
+        mapping[_canonical_variable_name(column)] = column
+    return sorted((canonical, source) for canonical, source in mapping.items())
+
+
+def _parent_tech_block_values(
+    block_df: pd.DataFrame,
+    parent_tech: str,
+    df_technologies: Optional[pd.DataFrame],
+) -> Optional[list]:
+    if block_df is None or block_df.empty or df_technologies is None:
+        return None
+    if "Technology" not in df_technologies.columns or "Name" not in df_technologies.columns:
+        return None
+
+    codes = (
+        df_technologies.loc[df_technologies["Technology"] == parent_tech, "Name"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .tolist()
+    )
+    if not codes:
+        return None
+
+    data = block_df.copy()
+    if "Year" in data.columns:
+        data = data.set_index("Year")
+    data = data.loc[data.index != "Total"] if "Total" in data.index else data
+
+    cols = [code for code in codes if code in data.columns]
+    if not cols:
+        return None
+
+    series = data[cols].apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
+    return series.tolist()
+
+
+def _is_network_segment(tech_name: str, df_technologies: Optional[pd.DataFrame]) -> bool:
+    if df_technologies is None:
+        return False
+    segment = _classify_segment(_get_tech_class(tech_name, df_technologies))
+    return segment >= 2
+
+
+def _tech_has_ppa_inputs(tech_name: str, all_tech_data: Optional[dict]) -> bool:
+    if not all_tech_data or tech_name not in all_tech_data:
+        return False
+    tech_fields = all_tech_data[tech_name]
+    if not isinstance(tech_fields, dict):
+        return False
+    for variable in PPA_INPUT_VARIABLES:
+        if variable == "ppa_currency":
+            continue
+        payload = tech_fields.get(variable)
+        if isinstance(payload, dict) and _values_are_meaningful(payload.get("values", [])):
+            return True
+    return False
+
+
+def _tech_has_wholesale_inputs(tech_name: str, all_tech_data: Optional[dict]) -> bool:
+    if not all_tech_data or tech_name not in all_tech_data:
+        return False
+    tech_fields = all_tech_data[tech_name]
+    if not isinstance(tech_fields, dict):
+        return False
+    for variable, payload in tech_fields.items():
+        if not _is_wholesale_variable(variable):
+            continue
+        if isinstance(payload, dict) and _values_are_meaningful(payload.get("values", [])):
+            return True
+    return False
+
+
+def _should_export_variable(
+    variable: str,
+    values: list | tuple | pd.Series,
+    *,
+    tech_name: str,
+    all_tech_data: Optional[dict] = None,
+    df_technologies: Optional[pd.DataFrame] = None,
+    from_tech_dataframe: bool = False,
+) -> bool:
+    """Return whether *variable* applies to *tech_name*.
+
+    Applicability is based on technology type (PPA / wholesale / network), not on
+    whether the series is all-zero. Zero-valued but applicable rows are still exported.
+    """
+    if _is_zero_currency_placeholder(variable, values):
+        return False
+
+    canonical = _canonical_variable_name(variable)
+    if canonical in PPA_INPUT_VARIABLES or canonical in PPA_COMPUTED_VARIABLES:
+        if from_tech_dataframe:
+            return _tech_has_ppa_inputs(tech_name, all_tech_data) or _values_are_meaningful(values)
+        return _tech_has_ppa_inputs(tech_name, all_tech_data)
+    if _is_wholesale_variable(canonical) or canonical in WHOLESALE_COMPUTED_VARIABLES:
+        if from_tech_dataframe:
+            return True
+        return _tech_has_wholesale_inputs(tech_name, all_tech_data)
+    if canonical in NETWORK_SEGMENT_VARIABLES:
+        return _is_network_segment(tech_name, df_technologies)
+    return True
+
+
+def _lookup_workbook_unit(variable: str, variable_units: Optional[dict[str, str]]) -> str:
+    if not variable_units:
+        return ""
+    return variable_units.get(variable, "")
+
+
+def _variable_unit(
+    variable: str,
+    *,
+    all_tech_data: Optional[dict] = None,
+    tech_name: Optional[str] = None,
+    variable_units: Optional[dict[str, str]] = None,
+) -> str:
+    if all_tech_data and tech_name and tech_name in all_tech_data:
+        payload = all_tech_data[tech_name].get(variable)
+        if isinstance(payload, dict):
+            unit = payload.get("unit", "")
+            if unit:
+                return unit
+
+    workbook_unit = _lookup_workbook_unit(variable, variable_units)
+    if workbook_unit:
+        return workbook_unit
+
+    source = COMPUTED_VARIABLE_UNIT_SOURCES.get(variable)
+    if source:
+        if all_tech_data and tech_name and tech_name in all_tech_data:
+            payload = all_tech_data[tech_name].get(source)
+            if isinstance(payload, dict):
+                unit = payload.get("unit", "")
+                if unit:
+                    return unit
+        inherited = _lookup_workbook_unit(source, variable_units)
+        if inherited:
+            return inherited
+
+    if _is_investment_allocation_variable(variable):
+        allocation_unit = _lookup_workbook_unit("capital_cost", variable_units)
+        if allocation_unit:
+            return allocation_unit
+
+    if variable.startswith("Loans (") or variable.startswith("Equity ("):
+        money_unit = _lookup_workbook_unit("total_grant_amount", variable_units)
+        return money_unit or DEFAULT_VARIABLE_UNITS["Financing Requirement"]
+
+    return DEFAULT_VARIABLE_UNITS.get(variable, "")
+
+
+def _append_records(
+    records: list[dict],
+    *,
+    variable: str,
+    tech_name: str,
+    values: list | tuple | pd.Series,
+    years: Iterable | None,
+    scenario: str,
+    unit: str,
+    include_unit_dim: bool,
+) -> None:
+    row_years = _normalize_years(years, values)
+    for year, value in zip(row_years, values):
+        if pd.isna(value):
+            value = None
+        records.append(
+            {
+                "Scenario": scenario,
+                "Variable": variable,
+                "Dim1": tech_name,
+                "Dim2": year,
+                "Dim3": unit if include_unit_dim else None,
+                "Dim4": None,
+                "Dim5": None,
+                "Dim6": None,
+                "Dim7": None,
+                "Dim8": None,
+                "Dim9": None,
+                "Dim10": None,
+                "ResultValue": value,
+            }
+        )
+
+
+def build_technology_parameter_raw_table(
+    all_tech_data: dict,
+    years: Iterable | None = None,
+    scenario: str = "Net Zero",
+    include_unit_dim: bool = True,
+    variable_units: Optional[dict[str, str]] = None,
+) -> pd.DataFrame:
+    """Flatten ``all_tech_data`` into a raw-input-style long table.
+
+    Output columns intentionally mirror the OSeMOSYS visualization template's
+    ``0.1 Raw data`` layout:
+
+    - ``Variable`` stores the MinFin technology parameter name.
+    - ``Dim1`` stores the technology name.
+    - ``Dim2`` stores the year.
+    - ``Dim3`` stores the unit when ``include_unit_dim`` is enabled.
+    """
+    records: list[dict] = []
+
+    for tech_name, tech_fields in (all_tech_data or {}).items():
+        if not isinstance(tech_fields, dict):
+            continue
+        for variable, payload in tech_fields.items():
+            if not isinstance(payload, dict):
+                continue
+
+            values = list(payload.get("values", []))
+            if not values or _is_zero_currency_placeholder(variable, values):
+                continue
+            if not _should_export_variable(
+                _canonical_variable_name(variable),
+                values,
+                tech_name=tech_name,
+                all_tech_data=all_tech_data,
+            ):
+                continue
+
+            unit = payload.get("unit", "") or _lookup_workbook_unit(variable, variable_units)
+            _append_records(
+                records,
+                variable=variable,
+                tech_name=tech_name,
+                values=values,
+                years=years,
+                scenario=scenario,
+                unit=unit,
+                include_unit_dim=include_unit_dim,
+            )
+
+    df = pd.DataFrame(records, columns=RAW_INPUT_COLUMNS)
+    if df.empty:
+        return df
+
+    return df.sort_values(["Variable", "Dim1", "Dim2"], kind="stable").reset_index(drop=True)
+
+
+def build_technology_output_raw_table(
+    tech_dataframes: dict,
+    *,
+    all_tech_data: Optional[dict] = None,
+    financing_requirement_by_tech: Optional[dict] = None,
+    investment_blocks: Optional[dict[str, pd.DataFrame]] = None,
+    df_technologies: Optional[pd.DataFrame] = None,
+    variable_units: Optional[dict[str, str]] = None,
+    years: Iterable | None = None,
+    scenario: str = "Net Zero",
+    include_unit_dim: bool = True,
+) -> pd.DataFrame:
+    """Flatten per-technology outputs (inputs + computed) into a long table.
+
+    Only variables that are meaningful for a given technology are exported.
+    For example, PPA parameters are omitted for technologies without PPA inputs,
+    and network purchase-cost fields are limited to Transmission/Distribution/Exports.
+    """
+    records: list[dict] = []
+    exported: set[tuple[str, str]] = set()
+
+    for tech_name, tech_df in (tech_dataframes or {}).items():
+        if not isinstance(tech_df, pd.DataFrame) or tech_df.empty:
+            continue
+
+        for variable, source_column in _iter_canonical_tech_columns(tech_df):
+            values = tech_df[source_column].tolist()
+            if not _should_export_variable(
+                variable,
+                values,
+                tech_name=tech_name,
+                all_tech_data=all_tech_data,
+                df_technologies=df_technologies,
+                from_tech_dataframe=True,
+            ):
+                continue
+
+            unit = _variable_unit(
+                variable,
+                all_tech_data=all_tech_data,
+                tech_name=tech_name,
+                variable_units=variable_units,
+            )
+            _append_records(
+                records,
+                variable=variable,
+                tech_name=tech_name,
+                values=values,
+                years=years if years is not None else tech_df.index.tolist(),
+                scenario=scenario,
+                unit=unit,
+                include_unit_dim=include_unit_dim,
+            )
+            exported.add((tech_name, variable))
+
+    if all_tech_data:
+        for tech_name, tech_fields in all_tech_data.items():
+            if not isinstance(tech_fields, dict):
+                continue
+            for variable, payload in tech_fields.items():
+                canonical = _canonical_variable_name(variable)
+                if (tech_name, canonical) in exported:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                values = list(payload.get("values", []))
+                if not values or _is_zero_currency_placeholder(canonical, values):
+                    continue
+                if not _should_export_variable(
+                    canonical,
+                    values,
+                    tech_name=tech_name,
+                    all_tech_data=all_tech_data,
+                    df_technologies=df_technologies,
+                ):
+                    continue
+                _append_records(
+                    records,
+                    variable=canonical,
+                    tech_name=tech_name,
+                    values=values,
+                    years=years,
+                    scenario=scenario,
+                    unit=payload.get("unit", "") or _lookup_workbook_unit(canonical, variable_units),
+                    include_unit_dim=include_unit_dim,
+                )
+                exported.add((tech_name, canonical))
+
+    for block_name, block_df in (investment_blocks or {}).items():
+        if block_name not in INVESTMENT_BLOCK_VARIABLES:
+            continue
+        for tech_name in (tech_dataframes or {}):
+            if (tech_name, block_name) in exported:
+                continue
+            values = _parent_tech_block_values(block_df, tech_name, df_technologies)
+            if values is None:
+                continue
+            _append_records(
+                records,
+                variable=block_name,
+                tech_name=tech_name,
+                values=values,
+                years=years,
+                scenario=scenario,
+                unit=_lookup_workbook_unit(block_name, variable_units),
+                include_unit_dim=include_unit_dim,
+            )
+            exported.add((tech_name, block_name))
+
+    for tech_name, repayment_df in (financing_requirement_by_tech or {}).items():
+        if not isinstance(repayment_df, pd.DataFrame) or repayment_df.empty:
+            continue
+        for variable in repayment_df.index:
+            values = repayment_df.loc[variable].tolist()
+            _append_records(
+                records,
+                variable=str(variable),
+                tech_name=tech_name,
+                values=values,
+                years=years if years is not None else repayment_df.columns.tolist(),
+                scenario=scenario,
+                unit=_variable_unit(
+                    str(variable),
+                    all_tech_data=all_tech_data,
+                    tech_name=tech_name,
+                    variable_units=variable_units,
+                ),
+                include_unit_dim=include_unit_dim,
+            )
+
+    df = pd.DataFrame(records, columns=RAW_INPUT_COLUMNS)
+    if df.empty:
+        return df
+
+    return df.sort_values(["Dim1", "Variable", "Dim2"], kind="stable").reset_index(drop=True)
+
+
+def _format_workbook(path: Path) -> None:
+    wb = load_workbook(path)
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    header_font = Font(bold=True)
+
+    for ws in wb.worksheets:
+        ws.freeze_panes = "A2"
+        ws.sheet_view.showGridLines = False
+        if ws.max_row >= 1:
+            for cell in ws[1]:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+        ws.auto_filter.ref = ws.dimensions
+        for col_idx in range(1, min(ws.max_column, 20) + 1):
+            col_letter = get_column_letter(col_idx)
+            max_len = 0
+            for cell in ws[col_letter][: min(ws.max_row, 200)]:
+                if cell.value is not None:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max(max_len + 2, 10), 35)
+
+    wb.save(path)
+
+
+def export_technology_parameter_raw_workbook(
+    all_tech_data: dict,
+    output_path: str | Path,
+    years: Iterable | None = None,
+    scenario: str = "Net Zero",
+    sheet_name: str = "0.1 Raw data",
+    variable_units: Optional[dict[str, str]] = None,
+) -> Path:
+    """Write a raw-input-style technology parameter workbook."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    raw_table = build_technology_parameter_raw_table(
+        all_tech_data=all_tech_data,
+        years=years,
+        scenario=scenario,
+        variable_units=variable_units,
+    )
+
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        raw_table.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    _format_workbook(output_path)
+    return output_path
+
+
+def export_technology_output_workbook(
+    tech_dataframes: dict,
+    output_path: str | Path,
+    *,
+    all_tech_data: Optional[dict] = None,
+    financing_requirement_by_tech: Optional[dict] = None,
+    investment_blocks: Optional[dict[str, pd.DataFrame]] = None,
+    df_technologies: Optional[pd.DataFrame] = None,
+    variable_units: Optional[dict[str, str]] = None,
+    years: Iterable | None = None,
+    scenario: str = "Net Zero",
+    sheet_name: str = "0.1 Raw data",
+) -> Path:
+    """Write the full per-technology output table (inputs + computed variables)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    raw_table = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        all_tech_data=all_tech_data,
+        financing_requirement_by_tech=financing_requirement_by_tech,
+        investment_blocks=investment_blocks,
+        df_technologies=df_technologies,
+        variable_units=variable_units,
+        years=years,
+        scenario=scenario,
+    )
+
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        raw_table.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    _format_workbook(output_path)
+    return output_path

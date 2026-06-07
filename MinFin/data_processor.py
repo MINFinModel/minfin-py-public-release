@@ -1,241 +1,34 @@
+"""
+Excel ingestion: workbook detection, definitions loading, infrastructure blocks, funding baseline.
 
-import pandas as pd
+Implementation is split across :mod:`workbook_format`, :mod:`pure_input_blocks`,
+:mod:`infrastructure_extractor`, and :mod:`excel_io`; this module re-exports the public API.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
 import numpy as np
-import warnings
+import pandas as pd
 
-class input_extractor:
-    def __init__(self,scenario) -> None:
-        self.scenario = scenario
-        self.starting_rows = {'net_zero': 137,'least_cost': 137}
-        self.starting_cols = {'least_cost': {'variable_cost': 4, 'fixed_cost': 6, 'co2_emission':18}}
-        self.starting_cols['net_zero']= { key:value-1 for key,value in self.starting_cols['least_cost'].items()}
-        self.starting_cols[scenario]['carbon_price'] = 16
-        self.starting_cols[scenario]['carbon_credit_price'] = 20
+from MinFin.infrastructure_extractor import input_extractor
+from MinFin.pure_input_blocks import (
+    build_input_blocks_from_pure_input_file,
+    emission_savings_series_from_investment_plan,
+)
+from MinFin.workbook_format import (
+    WORKBOOK_FORMAT_AUTO,
+    WORKBOOK_FORMAT_CHOICES,
+    WORKBOOK_FORMAT_LEGACY,
+    WORKBOOK_FORMAT_PURE_INPUT,
+    WORKBOOK_FORMAT_PYTHON,
+    detect_workbook_format,
+    normalize_workbook_format,
+)
 
-    def get_other_inputs(self,name_of_input,df_input_full):
-        '''
-        Get other inputs for a given scenario.
-        '''
-        starting_row = self.starting_rows[self.scenario]
-        starting_col = self.starting_cols[self.scenario]
-        if name_of_input in ['year','years','y']:
-            years = df_input_full.iloc[starting_row:starting_row+46, 0:1]
-            return years
-        input_df = df_input_full.iloc[starting_row:starting_row+46, starting_col[name_of_input]:starting_col[name_of_input]+1]  # A10:AH66 in Million
-        input_df.fillna(0, inplace=True)
-        input_df.reset_index(drop=True, inplace=True)
-        return input_df
-    
-    @staticmethod
-    def filter_valid_cols(df, header_row):
-        header_row = header_row.apply(
-            lambda x: (np.nan if isinstance(x, str) and not x.strip()
-                       else x.strip() if isinstance(x, str) else x)
-        )
-        num_named_cols = header_row.notna().sum()
-        df = df.iloc[:, :num_named_cols]
-        df.columns = list(header_row.iloc[:num_named_cols])
-        df.reset_index(drop=True, inplace=True)
-        return df
-    
-    @staticmethod
-    def _build_cost_df(df_input_full, starting_row, col_start, col_end, df_year, n_rows=56):
-        """
-        Extract a cost block for a given column range and append a 'Total' row.
-        """
-        # Slice raw values and header row from the Excel sheet
-        df = df_input_full.iloc[starting_row:starting_row + n_rows, col_start:col_end]
-        header_row = df_input_full.iloc[starting_row - 1, col_start:col_end]
+_normalize_workbook_format = normalize_workbook_format
 
-        # Normalise column names and drop unnamed/empty columns
-        df = input_extractor.filter_valid_cols(df, header_row)
-
-        # Replace missing values with zero for downstream arithmetic
-        df = df.fillna(0)
-
-        # Attach the Year column as the first column
-        df = pd.concat([df_year, df], axis=1)
-
-        # Compute and append a 'Total' row across all value columns
-        total_row = pd.DataFrame(df.iloc[:, 1:].sum()).T
-        total_row.insert(0, "Year", "Total")
-        df = pd.concat([df, total_row], ignore_index=True)
-
-        return df
-    
-    @staticmethod
-    def _build_input_blocks(scenario, df_input_full):
-        """
-        Internal helper to build all input blocks for a given scenario.
-        Returns a dict of DataFrames keyed by block name.
-        """
-        starting_rows = {'net_zero': 9, 'least_cost': 73}
-        starting_row = starting_rows[scenario]
-        n_rows = 56  # number of data rows per scenario block
-
-        # Shared Year column
-        df_year = (
-            df_input_full
-            .iloc[starting_row:starting_row + n_rows, 0]
-            .reset_index(drop=True)
-            .to_frame(name="Year")
-        )
-
-        # Column ranges
-        capital_start_col = 1
-        capital_end_col = 51
-
-        ffe_start_col = capital_end_col + 1
-        ffe_end_col = ffe_start_col + 20
-
-        elec_production_start_col = ffe_end_col + 2 
-        elec_production_end_col = elec_production_start_col + 50
-
-        op_start_col = elec_production_end_col + 1
-        op_end_col = op_start_col + 50
-
-        potential_generation_start_col = op_end_col + 1
-        potential_generation_end_col = potential_generation_start_col + 50
-
-        block_specs = {
-            "capital_cost": (capital_start_col, capital_end_col),
-            "ffe": (ffe_start_col, ffe_end_col),
-            "elec_production": (elec_production_start_col, elec_production_end_col),
-            "opex": (op_start_col, op_end_col),
-            "potential_generation": (potential_generation_start_col, potential_generation_end_col),
-        }
-
-        blocks = {}
-        for name, (col_start, col_end) in block_specs.items():
-            blocks[name] = input_extractor._build_cost_df(
-                df_input_full,
-                starting_row,
-                col_start,
-                col_end,
-                df_year,
-                n_rows=n_rows,
-            )
-
-        return blocks
-
-    @staticmethod
-    def load_block_for(scenario, df_input_full, block_name):
-        """
-        Return a single input block by name, e.g. 'capital_cost', 'ffe'.
-        """
-        blocks = input_extractor._build_input_blocks(scenario, df_input_full)
-        return blocks[block_name]
-
-    @staticmethod
-    def load_all_blocks_for(scenario, df_input_full):
-        """
-        Return all input blocks as a dict of DataFrames.
-        """
-        return input_extractor._build_input_blocks(scenario, df_input_full)
-
-    @staticmethod
-    def load_all_for(scenario, df_input_full):
-        """
-        return all input blocks as  DataFrames.
-        """
-        blocks = input_extractor.load_all_blocks_for(scenario, df_input_full)
-        return blocks["capital_cost"], blocks["ffe"], blocks["elec_production"], blocks["opex"], blocks["potential_generation"] 
-    
-    @staticmethod
-    def load_osemosys_input(scenario, df_input_full):
-        """
-        Legacy name kept for compatibility. Prefer load_input/load_input_blocks.
-        """
-        blocks = input_extractor.load_all_blocks_for(scenario, df_input_full)
-        # Set "Year" column as index for all DataFrames in blocks, if present
-        for k, v in blocks.items():
-            if "Year" in v.columns:
-                blocks[k] = v.set_index("Year")
-        return blocks["capital_cost"], blocks["ffe"], blocks["elec_production"]
-    
-    def load(self, df_input_full, block_name):
-        """
-        Convenience instance API: load a single block for this extractor's scenario.
-        Default block is 'ffe'.
-        """
-        blocks = input_extractor._build_input_blocks(self.scenario, df_input_full)
-        if "Year" in blocks[block_name].columns:
-            return blocks[block_name].set_index("Year")
-        else:
-            import warnings
-            warnings.warn(f"'Year' column not found in block '{block_name}'. Returning block unmodified.")
-            return blocks[block_name]
-    
-    def load_all(self, df_input_full):
-        return input_extractor.load_all_for(self.scenario, df_input_full)  
-    
-    def get_all_other_inputs(self,df_input_full):
-        totals=pd.DataFrame()
-        for name in self.starting_cols[self.scenario].keys(): 
-            totals[name] = self.get_other_inputs(name,df_input_full)
-
-        years = self.get_other_inputs('year',df_input_full)
-        totals.set_index(years.iloc[:,0], inplace=True)
-        #process the data
-        totals['capital_cost'] = self.cal_total_capital(df_input_full,since_year=years.iloc[0,0])["total_capital"].values
-        totals['total_cost'] = totals['capital_cost']+totals['variable_cost']+totals['fixed_cost']
-        totals['annual_elec_production'] = self.cal_total_elec_production(df_input_full,since_year=years.iloc[0,0])["annual_elec_production"].values
-        totals['cost_of_elec_in_pj'] = totals['total_cost']/totals['annual_elec_production']
-        totals['cost_of_elec'] = totals['cost_of_elec_in_pj']/3.6 #Convert PJ/USD to TWh/USD
-        totals['cost_of_co2'] = totals['co2_emission']*totals['carbon_price'] #Convert PJ/USD to TWh/USD
-        # totals.reset_index(inplace=True)  # Moves the current index to a column
-        totals.index.name = None  # Removes "MINFin" from the index name
-        # df_ffe_least_cost.set_index("Year", inplace=True)
-        return totals
-    def get_totals(self,df_input_full):
-        '''
-        Remain compatibility with the old function name.
-        '''
-        return self.get_all_other_inputs(df_input_full)
-    def calc_total_for_block(self, df_input_full, block_name, since_year=2025, total_col_name=None):
-        """
-        Sum all value columns of a given block from since_year onwards.
-        """
-        df_block = self.load(df_input_full, block_name).copy()
-
-        # Convert Year to numeric for comparison filtering
-        import warnings
-        if "Year" in df_block.columns:
-            df_block["Year"] = pd.to_numeric(df_block["Year"], errors="coerce")
-        elif df_block.index.name == "Year" or (df_block.index.names and "Year" in df_block.index.names):
-            df_block.index = pd.to_numeric(df_block.index, errors="coerce")
-            df_block["Year"] = df_block.index  # add Year column from index
-        else:
-            warnings.warn("No 'Year' column or index found. Adding 'Year' based on the current index.")
-            df_block["Year"] = df_block.index
-
-        # Filter data from since_year onwards
-        df_filtered = df_block[df_block["Year"] >= since_year]
-        # Sum across all columns (excluding 'Year')
-        total = df_filtered.iloc[:, :-1].sum(axis=1).to_frame()
-
-        # Set column name
-        if total_col_name is None:
-            total_col_name = f"total_{block_name}"
-        total.columns = [total_col_name]
-
-        return total
-    def cal_total_capital(self, df_input_full, since_year=2025):
-        # Reuse the general function, specifically for capital_cost
-        return self.calc_total_for_block(
-            df_input_full,
-            block_name="capital_cost",
-            since_year=since_year,
-            total_col_name="total_capital",
-        )
-    def cal_total_elec_production(self, df_input_full, since_year=2025):
-        # Reuse the general function, specifically for capital_cost
-        return self.calc_total_for_block(
-            df_input_full,
-            block_name="elec_production",
-            since_year=since_year,
-            total_col_name="annual_elec_production",
-        )
 
 def get_melted_currency_df():
     years = np.arange(2000, 2080)
@@ -264,29 +57,133 @@ def get_melted_currency_df():
     melted = exchange_rates.melt(id_vars=["Year"], var_name="Currency", value_name="Exchange Rate")
     
     return melted
-def load_excel_data(file_path):
+
+
+def read_infrastructure_input(file_path, workbook_format: str = WORKBOOK_FORMAT_AUTO) -> Optional[pd.DataFrame]:
     """
-    Load and extract various data sections from the Definitions sheet of an Excel file.
-    
-    Parameters:
-    -----------
-    file_path : str
-        Path to the Excel file
-        
-    Returns:
-    --------
-    dict
-        A dictionary containing DataFrames with keys from extraction_configs.
-        Keys: 'df_param_constraints', 'df_investment_needs', 'df_financing_baseline',
-              'df_funding_baseline', 'df_scenarios', 'df_currencies', 
-              'df_technologies', 'df_technologies_classification'
-        
-        Usage:
-            data = load_excel_data(file_path)
-            df_technologies = data['df_technologies']
-            # or unpack if needed:
-            df_param_constraints, df_investment_needs, ... = data.values()
+    Load the wide OSeMOSYS-style **New Infrastructure (Input)** sheet. Only defined for the legacy
+    .xlsm; the pure-input workbook (MINFin Python Input File.xlsx) has no equivalent sheet—use
+    ``input_extractor(..., workbook_format=WORKBOOK_FORMAT_PURE_INPUT, file_path=...)`` and the INVESTMENT
+    PLAN data instead. Returns None for the pure_input format.
     """
+    if workbook_format == WORKBOOK_FORMAT_AUTO:
+        workbook_format = detect_workbook_format(file_path)
+    else:
+        workbook_format = normalize_workbook_format(workbook_format)
+    if workbook_format == WORKBOOK_FORMAT_PURE_INPUT:
+        return None
+    return pd.read_excel(file_path, sheet_name="New Infrastructure (Input)", engine="openpyxl")
+
+
+def read_financing_baseline(
+    file_path, workbook_format: str = WORKBOOK_FORMAT_AUTO
+) -> Optional[pd.DataFrame]:
+    """
+    Read the **Financing Baseline** sheet (legacy .xlsm) used by :class:`MinFin.financing_baseline.financing_baseline_extractor`
+    (fixed row/column layout: exchange block + historic instrument block).
+
+    The pure-input workbook has **no** sheet named *Financing Baseline* or with the same **wide layout**.
+    The **historic financing content** that the legacy model places on Financing Baseline is instead provided
+    as **long-form** rows on **EXISTING INFRASTRUCTURE**; forward-looking instrument parameters are on
+    **NEW INFRASTRUCTURE**; exchange-rate style inputs appear on **MACROECONOMIC**. Use
+    ``financing_baseline_extractor.from_workbook(file_path)`` to build the extractor for either layout (legacy
+    sheet or pure-input sheets). This function still returns ``None`` for pure input because there is no
+    wide **Financing Baseline** sheet to return as a single ``DataFrame``.
+    """
+    if workbook_format == WORKBOOK_FORMAT_AUTO:
+        workbook_format = detect_workbook_format(file_path)
+    else:
+        workbook_format = normalize_workbook_format(workbook_format)
+    if workbook_format == WORKBOOK_FORMAT_PURE_INPUT:
+        return None
+    return pd.read_excel(file_path, sheet_name="Financing Baseline", engine="openpyxl")
+
+
+def _load_excel_data_pure_input_workbook(file_path: str) -> dict:
+    """
+    Map MINFin Python Input File.xlsx sheets to the same keys as legacy ``load_excel_data``.
+
+    - ``df_technologies`` / ``df_technologies_classification``: **TECHNOLOGY REGISTER** (header row 4),
+      then filtered by the parent technology list on **NEW INFRASTRUCTURE** so that sheet is the
+      authoritative source for "which technologies exist".
+    - ``df_currencies``: **MACROECONOMIC** exchange block (rows with Parameter containing ``Currency`` / Foreign / Local).
+    - Other definition lists are not in this workbook: returned as empty DataFrames with the same columns
+      as the legacy output so existing notebooks can run with minimal changes.
+    """
+    tr = pd.read_excel(file_path, sheet_name="TECHNOLOGY REGISTER", header=4, engine="openpyxl")
+    tr = tr.loc[:, [c for c in tr.columns if not str(c).startswith("Unnamed:")]]
+    if "Technology" in tr.columns:
+        tr = tr[tr["Technology"].notna() & (tr["Technology"].astype(str).str.strip() != "")]
+    for col in ("Name", "Description", "Technology", "Classification"):
+        if col not in tr.columns:
+            tr[col] = "" if col != "Description" else ""
+    tr = tr.copy()
+    tr["Sector"] = ""
+    tr = tr.fillna("")
+    # NEW INFRASTRUCTURE is the source of truth for "which technologies exist" in pure input.
+    # Adding/removing a row in NEW INFRASTRUCTURE removes the technology from df_technologies as well.
+    try:
+        from MinFin.technology_sheet_io import new_infrastructure_technology_list
+        nia_techs = set(new_infrastructure_technology_list(file_path))
+    except Exception:
+        nia_techs = set()
+    # TECHNOLOGY REGISTER in pure input has two blocks:
+    #   1. "Financing Technologies"  -> parent tech only (Name == ""), used for financing classification
+    #   2. "Investment Plan Technologies" -> OSeMOSYS code in Name (e.g. PWRBIO), parent in Technology
+    # Legacy df_technologies has one row per OSeMOSYS Name; drop the empty-Name parent rows so
+    # downstream lookups like ``df_technologies[Technology==X]["Name"].values`` return real codes.
+    df_technologies = tr[["Name", "Description", "Technology", "Classification", "Sector"]]
+    df_technologies = df_technologies[df_technologies["Name"].astype(str).str.strip() != ""].reset_index(drop=True)
+    if nia_techs:
+        df_technologies = df_technologies[df_technologies["Technology"].isin(nia_techs)].reset_index(drop=True)
+    # Classification map keeps both blocks (parent rows are valid for classification lookups), then filtered.
+    df_technologies_classification = tr[["Technology", "Classification"]].loc[
+        lambda x: (x["Technology"] != "")
+    ].drop_duplicates(subset=["Technology"], keep="first")
+    if nia_techs:
+        df_technologies_classification = df_technologies_classification[
+            df_technologies_classification["Technology"].isin(nia_techs)
+        ]
+    # Currencies: MACROECONOMIC, column 1 = Parameter, 2 = code
+    mac = pd.read_excel(file_path, sheet_name="MACROECONOMIC", header=None, engine="openpyxl")
+    cur_rows = []
+    for i in range(mac.shape[0]):
+        p = mac.iloc[i, 1] if mac.shape[1] > 1 else None
+        code = mac.iloc[i, 2] if mac.shape[1] > 2 else None
+        p = str(p).strip() if pd.notna(p) else ""
+        if p in ("Foreign Currency", "Local Currency", "Currency") and pd.notna(code):
+            c = str(code).strip()
+            if c:
+                cur_rows.append({"Code": c, "Currency": c})
+    df_currencies = pd.DataFrame(cur_rows).drop_duplicates().reset_index(drop=True)
+    if df_currencies.empty:
+        df_currencies = pd.DataFrame(columns=["Code", "Currency"])
+    # Empty placeholders (same structure as legacy)
+    df_param_constraints = pd.DataFrame(columns=["Name", "Description"])
+    df_investment_needs = pd.DataFrame(columns=["Name", "Description"])
+    df_financing_baseline = pd.DataFrame(columns=["Name", "Description"])
+    df_funding_baseline = pd.DataFrame(columns=["Name", "Description"])
+    df_scenarios = pd.DataFrame(columns=["Name", "Description"])
+    consumer_segments = pd.DataFrame(columns=["Name", "Currency", "Type", "Offtaker"])
+    # Classification map (match legacy)
+    classification_map = df_technologies_classification.set_index("Technology")["Classification"]
+    df_technologies = df_technologies.copy()
+    m = df_technologies["Technology"].map(classification_map)
+    df_technologies["Classification"] = m
+    return {
+        "df_param_constraints": df_param_constraints,
+        "df_investment_needs": df_investment_needs,
+        "df_financing_baseline": df_financing_baseline,
+        "df_funding_baseline": df_funding_baseline,
+        "df_scenarios": df_scenarios,
+        "df_currencies": df_currencies,
+        "df_technologies": df_technologies,
+        "df_technologies_classification": df_technologies_classification,
+        "consumer_segments": consumer_segments,
+    }
+
+
+def _load_excel_data_legacy(file_path) -> dict:
     df_definitions_full = pd.read_excel(file_path, sheet_name="Definitions", engine="openpyxl")
     
     def _extract_section(df, row_start, row_end, col_start, col_end, 
@@ -414,6 +311,40 @@ def load_excel_data(file_path):
     
     # Return dictionary - names come directly from extraction_configs
     return {config["name"]: extracted_data[config["name"]] for config in extraction_configs}
+
+
+def load_excel_data(file_path, workbook_format: str = WORKBOOK_FORMAT_AUTO) -> dict:
+    """
+    Load definition-style tables from the workbook. Use ``workbook_format`` to switch layouts.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to ``MINFin Energy Example Input File.xlsm`` (legacy) or ``MINFin Python Input File.xlsx`` (pure input).
+    workbook_format : str
+        'auto' — use :func:`detect_workbook_format` (INVESTMENT PLAN + no Definitions ⇒ pure_input).
+        'legacy' — **Definitions** sheet (and **New Infrastructure (Input)** read separately).
+        'pure_input' — **TECHNOLOGY REGISTER**, **MACROECONOMIC** (currencies), empty placeholders for other tables. The name ``'python'`` is accepted as a deprecated alias.
+
+    Returns
+    -------
+    dict
+        Same keys as before: ``df_param_constraints``, ``df_investment_needs``, ``df_financing_baseline``,
+        ``df_funding_baseline``, ``df_scenarios``, ``df_currencies``, ``df_technologies``,
+        ``df_technologies_classification``, ``consumer_segments``.
+    """
+    if workbook_format == WORKBOOK_FORMAT_AUTO:
+        workbook_format = detect_workbook_format(file_path)
+    else:
+        workbook_format = normalize_workbook_format(workbook_format)
+    if workbook_format == WORKBOOK_FORMAT_PURE_INPUT:
+        return _load_excel_data_pure_input_workbook(file_path)
+    if workbook_format == WORKBOOK_FORMAT_LEGACY:
+        return _load_excel_data_legacy(file_path)
+    raise ValueError(
+        f"workbook_format must be one of {WORKBOOK_FORMAT_CHOICES} (or the alias 'python' for pure_input), got {workbook_format!r}"
+    )
+
 
 def process_funding_baseline(df_funding_baseline_full,melted_currency_df=get_melted_currency_df()):
     """

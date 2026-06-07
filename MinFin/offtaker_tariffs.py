@@ -3,6 +3,8 @@
 import numpy as np
 import pandas as pd
 
+from MinFin.fx import fx_to_dashboard_currency as _get_fx_to_dash
+
 # ---------------------------------------------------------------------------
 # 1. Segment classification constants and helpers
 # ---------------------------------------------------------------------------
@@ -144,14 +146,6 @@ def _weighted_components(tech_df, year, offtaker_share_pairs, total_wholesale, t
         pc += p
         bw[name], bp[name] = w, p
     return wc, pc, bw, bp
-
-
-def _get_fx_to_dash(currency, year, dash_curr, exchange_rates):
-    if exchange_rates is None or dash_curr is None or currency not in exchange_rates.columns or dash_curr not in exchange_rates.columns or year not in exchange_rates.index:
-        return 1.0
-    rx = float(exchange_rates.loc[year, currency])
-    rd = float(exchange_rates.loc[year, dash_curr])
-    return rd / rx if rx else 0.0
 
 
 def _get_offtaker_tariff_columns(tech_name, upstream_category, organized_offtaker, tech_dataframes):

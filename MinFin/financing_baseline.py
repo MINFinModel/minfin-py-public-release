@@ -1,81 +1,241 @@
-import time
 import math
-import random
+
 import numpy as np
 import pandas as pd
 
-currency_list = ["KES", "USD", "EUR", "GBP", "JPY"]
-base_rates = {
-    "KES": 2,#0.009,
-    "USD": 3.0,
-    "EUR": 1.08,
-    "GBP": 1.36,
-    "JPY": 0.007
+from MinFin.fx import (
+    currency_list,
+    exchange_rates_by_year,
+    get_exchange_rates,
+    macro_rates_dict_from_exchange_wide,
+)
+from MinFin.utils import pmt
+
+# Canonical repayment Schedule names (from the Excel "Financing Baseline" formula) keyed by a
+# lowercase lookup. Accepts both legacy labels and the pure-input EXISTING INFRASTRUCTURE labels
+# (e.g. "Lump Sum Principal" -> "Lump Sum on Principal").
+_SCHEDULE_ALIASES = {
+    "equity": "Equity",
+    "equal principal payments (epp)": "Equal Principal Payments (EPP)",
+    "epp": "Equal Principal Payments (EPP)",
+    "epp with grace on principal": "EPP with Grace on Principal",
+    "epp with grace years for principal": "EPP with Grace on Principal",
+    "epp with grace on principal & interest": "EPP with Grace on Principal & Interest",
+    "epp with grace on principal and interest": "EPP with Grace on Principal & Interest",
+    "lump sum on principal": "Lump Sum on Principal",
+    "lump sum principal": "Lump Sum on Principal",
+    "lump sum on principal & interest": "Lump Sum on Principal & Interest",
+    "lump sum on principal and interest": "Lump Sum on Principal & Interest",
+    "lump sum principal and interest": "Lump Sum on Principal & Interest",
+    "lump sum principal & interest": "Lump Sum on Principal & Interest",
+    "annuity": "Annuity",
+    "annuity with grace on principal": "Annuity with Grace on Principal",
+    "annuity with grace on principal & interest": "Annuity with Grace on Principal & Interest",
+    "annuity with grace on principal and interest": "Annuity with Grace on Principal & Interest",
 }
-exchange_rates_by_year = pd.DataFrame(columns=currency_list)
-for year in range(2010, 2080):
-    exchange_rates_by_year[year] = {
-        currency: round(base_rates[currency] * round(1 + random.uniform(-0.05, 0.05)), 5) for currency in currency_list
-    }
-    
-def get_exchange_rates(target_currency, currency_series,year_series):
+
+
+def _normalize_schedule(scenario):
+    """Return the canonical Schedule name, or None for blank/unrecognised values."""
+    if scenario is None:
+        return None
+    key = str(scenario).strip().lower()
+    if key in ("", "nan", "0"):
+        return None
+    return _SCHEDULE_ALIASES.get(key)
+
+
+def historical_from_existing_infrastructure(ex: pd.DataFrame) -> pd.DataFrame:
     """
-    Get exchange rates based on year and original currency, and convert to target currency.
-    
-    Parameters:
-    year_series: Pandas Series containing years
-    currency_series: Pandas Series containing original currencies
-    target_currency: Target currency (e.g., USD)
-    
-    Returns:
-    Pandas Series containing corresponding exchange rates
+    Map **EXISTING INFRASTRUCTURE** (header row 4) onto the same column layout as the legacy
+    *Financing Baseline* historical block (before ``add_columns_for_other_currencies``).
+
+    Pure-input columns: Technology, Year, Financing Source, Volume of Finance,
+    Currency, Rate, Term, Grace period, Schedule.
+    Optional (no longer required from sheet): Type of Finance; Financing Sector /
+    Financial Institution / Origin of Finance are left unset for downstream stats that only need source + amounts.
     """
-    # #print(year_series)
-    year_series = year_series.astype(int)  # Ensure years are integers
-    mask = year_series.isin(exchange_rates_by_year.keys()) & currency_series.isin(currency_list)
-    # #print(mask)
-    rates = year_series[mask].map(lambda y: exchange_rates_by_year[y]).combine(currency_series[mask], lambda rates_dict, c: rates_dict.get(c, None))
-    target_rates = year_series[mask].map(lambda y: exchange_rates_by_year[y].get(target_currency, 1))
-    return  target_rates/rates
+    df = ex.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.loc[:, [c for c in df.columns if not c.startswith("Unnamed")]]
+    for col in ("Technology", "Year", "Financing Source", "Volume of Finance", "Currency"):
+        if col not in df.columns:
+            raise ValueError(f"EXISTING INFRASTRUCTURE missing required column: {col}")
+    out = pd.DataFrame()
+    uid = df.index.astype(str)
+    out["Name of Project"] = (
+        df["Technology"].astype(str) + " | " + df["Year"].astype(str) + " | " + uid
+    )
+    out["Name of Financier"] = ""
+    out["Sector"] = np.nan
+    out["Technology"] = df["Technology"]
+    out["Source"] = np.nan
+    out["Year"] = pd.to_numeric(df["Year"], errors="coerce").fillna(0).astype(int)
+    out["Financing Source"] = df["Financing Source"]
+    # Optional classification columns (omit from template or leave blank).
+    # out["Type of Finance"] = df["Type of Finance"]
+    # out["Financing Sector"] = ...
+    # out["Financial Institution"] = ...
+    # out["Origin of Finance"] = ...
+    if "Type of Finance" in df.columns:
+        out["Type of Finance"] = df["Type of Finance"].astype(str)
+    else:
+        out["Type of Finance"] = "Loan"
+    # Match legacy ``get_historical`` column names (stripped); keep nan unless sheet adds columns later.
+    out["Financing Sector"] = df["Financing Sector"].astype(object) if "Financing Sector" in df.columns else np.nan
+    out["Financial Institution"] = (
+        df["Financial Institution"].astype(object) if "Financial Institution" in df.columns else np.nan
+    )
+    out["Origin of Finance"] = df["Origin of Finance"].astype(object) if "Origin of Finance" in df.columns else np.nan
+    out["Volume of Finance"] = pd.to_numeric(df["Volume of Finance"], errors="coerce").fillna(0.0)
+    out["Currency"] = df["Currency"].fillna("USD").astype(str)
+    out["Volume in GHS"] = np.nan
+    out["Volume in USD"] = np.nan
+    out["Exchange Rate"] = np.nan
+    out["Rate"] = pd.to_numeric(df.get("Rate", np.nan), errors="coerce").fillna(0.0)
+    out["Term"] = pd.to_numeric(df.get("Term", np.nan), errors="coerce").fillna(0.0)
+    out["Maturity"] = np.nan
+    out["Grace period"] = pd.to_numeric(df.get("Grace period", np.nan), errors="coerce").fillna(0.0)
+    out["Schedule"] = df.get("Schedule", "").fillna("").astype(str)
+    return out
+
+
+def exchange_rates_wide_from_macroeconomic(file_path: str) -> pd.DataFrame:
+    """
+    Build a year × currency table from **MACROECONOMIC** (same role as the top of legacy *Financing Baseline*).
+    Rows: Foreign Currency, Local Currency, Currency (codes in column C); year columns from header row 4.
+    """
+    mac = pd.read_excel(file_path, sheet_name="MACROECONOMIC", header=None, engine="openpyxl")
+    header_row = 4
+    year_cols: list[tuple[int, int]] = []
+    for j in range(mac.shape[1]):
+        v = mac.iloc[header_row, j]
+        try:
+            y = int(float(v))
+        except (TypeError, ValueError):
+            continue
+        if 1990 < y < 2100:
+            year_cols.append((j, y))
+    by_year: dict[int, dict[str, float]] = {}
+    for i in range(header_row + 1, mac.shape[0]):
+        label = mac.iloc[i, 1]
+        if pd.isna(label):
+            continue
+        label = str(label).strip()
+        if label not in ("Foreign Currency", "Local Currency", "Currency"):
+            continue
+        code = mac.iloc[i, 2]
+        if pd.isna(code):
+            continue
+        code = str(code).strip()
+        for j, y in year_cols:
+            val = mac.iloc[i, j]
+            if pd.notna(val):
+                by_year.setdefault(y, {})[code] = float(val)
+    if not by_year:
+        return pd.DataFrame()
+    wide = pd.DataFrame.from_dict(by_year, orient="index").sort_index()
+    wide.index.name = None
+    # Align to model years; forward-fill so early historic financing years still resolve rates
+    wide = wide.reindex(range(2010, 2080)).ffill().bfill()
+    return wide
+
 
 class financing_baseline_extractor:
-    def __init__(self,df_financing_baseline_full,currency='KES',starting_year=2024,number_of_payments_per_annum=1) -> None:
+    def __init__(
+        self,
+        df_financing_baseline_full,
+        currency="KES",
+        starting_year=2024,
+        number_of_payments_per_annum=1,
+        *,
+        historical_from_existing: pd.DataFrame | None = None,
+        exchange_rates_wide: pd.DataFrame | None = None,
+        macro_rates_dict: dict | None = None,
+    ) -> None:
         self.currency = currency
         self.years = list(range(2010, 2071))
         self.starting_year = starting_year
-        self.foreign_currency = 'USD'
-        self.discount_rate = 5.33/100 #'High Level Dashboard'!E34
+        self.foreign_currency = "USD"
+        self.discount_rate = 5.33 / 100  # 'High Level Dashboard'!E34
         self.number_of_payments_per_annum = number_of_payments_per_annum
-        self.starting_rows = {'exchange_rate': 35,'historical baseline': 49}
-        self.starting_cols = {'historical baseline':0,'exchange_rate':2}
-        # {'least_cost': {'variable_cost': 4, 'fixed_cost': 6, 'annual_elec_production': 10,'co2_emission':18}}
-        # self.starting_cols['net_zero']= { key:value-1 for key,value in self.starting_cols['least_cost'].items()}
-        # self.starting_cols[scenario]['carbon_price'] = 16
+        self.starting_rows = {"exchange_rate": 35, "historical baseline": 49}
+        self.starting_cols = {"historical baseline": 0, "exchange_rate": 2}
+        self._exchange_rates_wide = exchange_rates_wide
+        self._macro_rates_dict = macro_rates_dict
         self.df_financing_baseline_full = df_financing_baseline_full
-        self.historical = self.get_historical()
-        
-        
+        self._historical_is_prebuilt = historical_from_existing is not None
+        if historical_from_existing is not None:
+            self.historical = self.add_columns_for_other_currencies(
+                historical_from_existing.copy(), self._macro_rates_dict
+            )
+            self.historical = self.historical.dropna(how="all", axis=0).reset_index(drop=True)
+        else:
+            self.historical = self.get_historical()
+
+    @classmethod
+    def from_workbook(cls, file_path: str, currency="KES", starting_year=2024, number_of_payments_per_annum=1):
+        """
+        Build an extractor from either the legacy **Financing Baseline** sheet or the pure-input workbook
+        (**EXISTING INFRASTRUCTURE** + **MACROECONOMIC** exchange block).
+        """
+        from MinFin.data_processor import WORKBOOK_FORMAT_PURE_INPUT, detect_workbook_format
+
+        if detect_workbook_format(file_path) == WORKBOOK_FORMAT_PURE_INPUT:
+            ex = pd.read_excel(
+                file_path, sheet_name="EXISTING INFRASTRUCTURE", header=4, engine="openpyxl"
+            )
+            hist = historical_from_existing_infrastructure(ex)
+            ex_wide = exchange_rates_wide_from_macroeconomic(file_path)
+            macro_d = (
+                macro_rates_dict_from_exchange_wide(ex_wide) if len(ex_wide) else None
+            )
+            return cls(
+                pd.DataFrame(),
+                currency=currency,
+                starting_year=starting_year,
+                number_of_payments_per_annum=number_of_payments_per_annum,
+                historical_from_existing=hist,
+                exchange_rates_wide=ex_wide if len(ex_wide) else None,
+                macro_rates_dict=macro_d,
+            )
+        df_fb = pd.read_excel(file_path, sheet_name="Financing Baseline", engine="openpyxl")
+        return cls(
+            df_fb,
+            currency=currency,
+            starting_year=starting_year,
+            number_of_payments_per_annum=number_of_payments_per_annum,
+        )
+
     def get_exchange_rates_by_year(self):
-        df_financing_baseline_full=self.df_financing_baseline_full
-        starting_row = self.starting_rows['exchange_rate']
-        starting_col = self.starting_cols['exchange_rate'] 
+        if self._exchange_rates_wide is not None and len(self._exchange_rates_wide):
+            df_result = self._exchange_rates_wide.copy()
+            df_result.index = df_result.index.astype(int)
+            return df_result
+        df_financing_baseline_full = self.df_financing_baseline_full
+        starting_row = self.starting_rows["exchange_rate"]
+        starting_col = self.starting_cols["exchange_rate"]
         new_columns = self.years
-        
+
         # Extract data (skip the column names row)
-        df_exchange_rates = df_financing_baseline_full.iloc[starting_row:starting_row+10, starting_col:starting_col+len(new_columns)].copy()
+        df_exchange_rates = df_financing_baseline_full.iloc[
+            starting_row : starting_row + 10, starting_col : starting_col + len(new_columns)
+        ].copy()
         df_exchange_rates.columns = df_exchange_rates.iloc[0]
         df_exchange_rates = df_exchange_rates.iloc[1:]
-        df_exchange_rates.set_index('Currency', inplace=True)
+        df_exchange_rates.set_index("Currency", inplace=True)
         df_exchange_rates.index.name = "Year"
         df_exchange_rates.columns.name = None  # drop column index name
 
-        
-        # df_exchange_rates.columns = new_columns      
-        df_result = df_exchange_rates.T.iloc[:].dropna(how='all', axis=0)
+        # df_exchange_rates.columns = new_columns
+        df_result = df_exchange_rates.T.iloc[:].dropna(how="all", axis=0)
         df_result.index = df_result.index.astype(int)
         return df_result
+
     def get_historical(self):
-        df_financing_baseline_full=self.df_financing_baseline_full
+        if self._historical_is_prebuilt:
+            return self.historical.copy()
+        df_financing_baseline_full = self.df_financing_baseline_full
         starting_row = self.starting_rows['historical baseline']
         starting_col = self.starting_cols['historical baseline']
         # Get the first row as column names
@@ -87,10 +247,10 @@ class financing_baseline_extractor:
         # Reset column names
         df_historical.columns = [x.strip() for x in new_columns]        
         df_historical = df_historical.drop(columns=["Volume in KES", "Volume in USD", "Exchange Rate","Maturity"], errors='ignore').dropna(how='all', axis=0)#.dropna(how='all', axis=1)
-        df_historical = self.add_columns_for_other_currencies(df_historical, exchange_rates_by_year)
+        df_historical = self.add_columns_for_other_currencies(df_historical, None)
         return df_historical.dropna(how='all', axis=0).reset_index(drop=True)#.dropna(how='all', axis=1)
     
-    def add_columns_for_other_currencies(self, df, exchange_rates_by_year):
+    def add_columns_for_other_currencies(self, df, rates_by_year=None):
         """
         Calculate financial data and add:
         - volume of finance in currency
@@ -100,53 +260,89 @@ class financing_baseline_extractor:
         
         Parameters:
         df: DataFrame containing transaction data
-        exchange_rates: Currency exchange rate DataFrame, including rates from base_currency to other currencies
-        base_currency: Base currency, default KES
-        foreign_currency: Foreign currency, usually USD
+        rates_by_year: Optional dict ``{year: {currency: rate}}``; defaults to module ``exchange_rates_by_year``.
         """
         base_currency=self.currency
         foreign_currency=self.foreign_currency
+        rd = rates_by_year if rates_by_year is not None else exchange_rates_by_year
 
-        df[f"Volume in {base_currency}"] = df["Volume of Finance"] *get_exchange_rates(base_currency,df["Currency"],df["Year"])
+        df[f"Volume in {base_currency}"] = df["Volume of Finance"] * get_exchange_rates(
+            base_currency, df["Currency"], df["Year"], rd
+        )
 
-        df[f"Volume in {foreign_currency}"] = df["Volume of Finance"] *get_exchange_rates(foreign_currency,df["Currency"],df["Year"])
-        df[f"Exchange Rate to {base_currency}"] = get_exchange_rates(base_currency,df["Currency"],df["Year"])
-        df[f"Exchange Rate to {foreign_currency}"] = get_exchange_rates(foreign_currency,df["Currency"],df["Year"])
+        df[f"Volume in {foreign_currency}"] = df["Volume of Finance"] * get_exchange_rates(
+            foreign_currency, df["Currency"], df["Year"], rd
+        )
+        df[f"Exchange Rate to {base_currency}"] = get_exchange_rates(
+            base_currency, df["Currency"], df["Year"], rd
+        )
+        df[f"Exchange Rate to {foreign_currency}"] = get_exchange_rates(
+            foreign_currency, df["Currency"], df["Year"], rd
+        )
         df["Maturity"] = df["Term"]-self.starting_year+df["Year"]
         
         return df
     
-    def cal_repayment_schedule(self,df):
-        df=df.reset_index(drop=True)
-        years =  self.years
+    def cal_repayment_schedule(
+        self,
+        df,
+        *,
+        convert_currency: bool = False,
+        dashboard_currency: str | None = None,
+        rates_by_year: dict | None = None,
+    ):
+        """
+        Build the per-project repayment schedule (one row per project, one column per year),
+        mirroring the Excel "Financing Baseline" formula across all Schedule types.
+
+        Currency handling:
+        - ``convert_currency=False`` (default): use ``Volume of Finance`` as-is, i.e. the
+          commitment currency. Inputs are USD by default, so this keeps USD amounts.
+        - ``convert_currency=True``: multiply each year's payment by the Excel FX ratio
+          ``rate(dashboard_currency, year) / rate(commitment_currency, year)``;
+          ``dashboard_currency`` defaults to ``self.foreign_currency`` ("USD").
+        """
+        if dashboard_currency is None:
+            dashboard_currency = self.foreign_currency
+        df = df.reset_index(drop=True)
+        years = self.years
         df_repayment = pd.DataFrame(columns=years)
         df_repayment['Repayment'] = 0
         df_repayment['Name of Project'] = df['Name of Project']
-        
+
         repay_years_list = []
-        # Iterate over each row in the DataFrame
-        for index, row in df.fillna(0).iterrows():
-            # Calculate the repayment years for each project
-            repay_years = list(range(row['Year'], row['Year'] + int(row['Term']+1)))
+        for _, row in df.fillna(0).iterrows():
+            # Repayment years window: start .. start + ceil(term) (a superset of the paying years;
+            # per-Schedule logic zeroes out non-paying years).
+            repay_years = list(range(int(row['Year']), int(row['Year']) + int(row['Term'] + 1)))
             repay_years_list.append(repay_years)
-        
-        # Assign the list of repayment years to the DataFrame
+
         df_repayment['repay_years'] = repay_years_list
         df_repayment['Project ID'] = df.index
         for year in range(2010, 2071):
-            # #print(df['Volume in KES'])
             for project_id in df.index:
-                # #print( 2020 in list(df_repayment.loc[df_repayment['Project ID'] == project_id,'repay_years'])[0])
-                # #print('==',list(df_repayment.loc[df_repayment['Project ID'] == project_id,'repay_years'])[0])
-                repay_years = list(df_repayment.loc[df_repayment['Project ID'] == project_id,'repay_years'])[0]
+                repay_years = list(df_repayment.loc[df_repayment['Project ID'] == project_id, 'repay_years'])[0]
                 if year in repay_years:
-                    if year == repay_years[-1]:
-                        df_repayment.loc[df_repayment['Project ID'] == project_id,year] = self.cal_repayment_value(df.loc[project_id,"Rate"],df.loc[project_id,'Volume of Finance'],df.loc[project_id,"Schedule"],year,repay_years,term=df.loc[project_id,'Term'],grace_period=df.loc[project_id,'Grace period']) 
-                    else:
-                        df_repayment.loc[df_repayment['Project ID'] == project_id,year] = self.cal_repayment_value(df.loc[project_id,"Rate"],df.loc[project_id,'Volume of Finance'],df.loc[project_id,"Schedule"],year,repay_years,term=df.loc[project_id,'Term'],grace_period=df.loc[project_id,'Grace period']) 
+                    fx_factor = 1.0
+                    if convert_currency:
+                        fx_factor = self._repayment_fx_factor(
+                            df.loc[project_id, "Currency"],
+                            year,
+                            dashboard_currency,
+                            rates_by_year,
+                        )
+                    df_repayment.loc[df_repayment['Project ID'] == project_id, year] = self.cal_repayment_value(
+                        df.loc[project_id, "Rate"],
+                        df.loc[project_id, 'Volume of Finance'],
+                        df.loc[project_id, "Schedule"],
+                        year,
+                        repay_years,
+                        term=df.loc[project_id, 'Term'],
+                        grace_period=df.loc[project_id, 'Grace period'],
+                        fx_factor=fx_factor,
+                    )
                 else:
-                    df_repayment.loc[df_repayment['Project ID'] == project_id,year] = 0
-            # df_repayment.loc[df_repayment[year] == year] = df['Volume in KES'] * (1 + df['Rate']) ** df['Maturity']
+                    df_repayment.loc[df_repayment['Project ID'] == project_id, year] = 0
         
         df_repayment['Sum of Repayment'] = df_repayment[years].sum(axis=1).astype(float)
         # #print("============================================")
@@ -156,46 +352,155 @@ class financing_baseline_extractor:
         df_repayment['Average Annual Payment']= df_repayment['Sum of Repayment'] /df['Term'].astype(float)#.replace(0,100000)
         df_repayment['Average Annual Payment'] = df_repayment['Average Annual Payment'].replace([np.inf, -np.inf], np.nan).fillna(0)
         return df_repayment.reset_index(drop=True)
-    def cal_repayment_value(self,interest_rate,volume,scenario,year,repay_years,term=0,grace_period=0):
-        # #print(type(scenario),scenario)
-        # #print(type(interest_rate),interest_rate)
-        if scenario in ['Equity']:
+    def _repayment_fx_factor(self, commitment_currency, year, dashboard_currency, rates_by_year=None):
+        """Excel per-year FX ratio rate(dashboard)/rate(commitment); 1.0 if rates unavailable."""
+        rd = rates_by_year if rates_by_year is not None else (self._macro_rates_dict or exchange_rates_by_year)
+        year_rates = rd.get(int(year)) if rd else None
+        if not year_rates:
+            return 1.0
+        dash = year_rates.get(str(dashboard_currency))
+        comm = year_rates.get(str(commitment_currency))
+        if not dash or not comm:
+            return 1.0
+        return dash / comm
 
-             return volume * interest_rate 
-        elif scenario in ['Lump Sum Principal']:
-            if year == repay_years[-1]:
-                return volume * (1+interest_rate) 
-            else:
-                return volume * interest_rate 
-        
-        elif scenario in ['Lump Sum Principal and Interest']:
-            if year == repay_years[-1]:
-                return volume * (1+interest_rate)**term
-            else:
-                return 0
-                    
-        elif scenario in ['EPP with Grace Years for Principal']:
-            if year < repay_years[0]+grace_period:
-                return volume * interest_rate
-            else:
-                return -self.calculate_annuity_payment(interest_rate, term-grace_period+1, volume, fv=0)
-        
-        elif scenario in ['Equal Principal Payments (EPP)','Equal Principal Payments (EPP)']:    
-                        
-            return -self.calculate_annuity_payment(interest_rate, term-grace_period+1, volume, fv=0)
-        elif scenario in ['EPP with Grace on Principal & Interest','EPP with Grace on Principal and Interest']:
-            payment = self.epp_with_grace_p_and_i_payment(
-                interest_rate=interest_rate,
-                volume=volume,
-                start_year=repay_years[0],
-                term=term,
-                grace_period=grace_period,
-                year=year,
+    def cal_repayment_value(self, interest_rate, volume, scenario, year, repay_years,
+                            term=0, grace_period=0, fx_factor=1.0):
+        """
+        Single project-year repayment, matching the Excel "Financing Baseline" formula.
+
+        *scenario* is the Schedule type; names are normalised (see ``_SCHEDULE_ALIASES``) so
+        legacy and pure-input **EXISTING INFRASTRUCTURE** labels both work. The base payment is
+        multiplied by *fx_factor* (Excel's per-year FX ratio; 1.0 keeps the commitment currency).
+        Errors return 0.0 (Excel ``IFERROR(..., 0)``).
+        """
+        try:
+            base = self._repayment_base_value(
+                interest_rate, volume, scenario, year, repay_years, term, grace_period
             )
-            return payment
-        else:
-            return None
-            
+        except Exception:
+            return 0.0
+        if base is None:
+            return 0.0
+        return base * fx_factor
+
+    def _repayment_base_value(self, interest_rate, volume, scenario, year, repay_years,
+                              term=0, grace_period=0):
+        canonical = _normalize_schedule(scenario)
+        if canonical is None:
+            return 0.0
+        F = repay_years[0]
+        L, Q, R, T, y = float(volume), float(interest_rate), float(term), float(grace_period), float(year)
+        if canonical == "Equity":
+            return self._pay_equity(L, Q, R, F, y)
+        if canonical == "Equal Principal Payments (EPP)":
+            return self._pay_epp(L, Q, R, F, y)
+        if canonical == "EPP with Grace on Principal":
+            return self._pay_epp_grace_p(L, Q, R, T, F, y)
+        if canonical == "EPP with Grace on Principal & Interest":
+            return self.epp_with_grace_p_and_i_payment(
+                interest_rate=Q, volume=L, start_year=F, term=R, grace_period=T, year=y
+            )
+        if canonical == "Lump Sum on Principal":
+            return self._pay_lump_principal(L, Q, R, F, y)
+        if canonical == "Lump Sum on Principal & Interest":
+            return self._pay_lump_principal_interest(L, Q, R, F, y)
+        if canonical == "Annuity":
+            return self._pay_annuity(L, Q, R, F, y)
+        if canonical == "Annuity with Grace on Principal":
+            return self._pay_annuity_grace_p(L, Q, R, T, F, y)
+        if canonical == "Annuity with Grace on Principal & Interest":
+            return self._pay_annuity_grace_pi(L, Q, R, T, F, y)
+        return 0.0
+
+    # --- Per-Schedule payment formulas (L=volume, Q=rate, R=term, T=grace, F=start year, y=year) ---
+    @staticmethod
+    def _pay_equity(L, Q, R, F, y):
+        floor_R = math.floor(R)
+        if F <= y <= F + floor_R - 1:
+            return L * Q
+        if y == F + math.ceil(R) - 1:
+            return (R - floor_R) * L * Q
+        return 0.0
+
+    @staticmethod
+    def _pay_epp(L, Q, R, F, y):
+        if R == 0:
+            return 0.0
+        floor_R = math.floor(R)
+        if F <= y < F + floor_R:
+            principal = L / R
+            remaining = L - principal * max(0.0, y - F)
+            return principal + remaining * Q
+        if y == F + math.ceil(R) - 1:
+            return (L / R) * (R - floor_R) * (1 + Q)
+        return 0.0
+
+    @staticmethod
+    def _pay_epp_grace_p(L, Q, R, T, F, y):
+        denom = R - T
+        if denom == 0:
+            return 0.0
+        floor_R, floor_T = math.floor(R), math.floor(T)
+        if F <= y <= F + T - 1:
+            return L * Q
+        if y == F + floor_T:
+            return L * Q + (L / denom) * (1 - (T - floor_T))
+        if F + T - 1 < y < F + R - 1:
+            principal = L / denom
+            remaining = L - principal * max(0.0, y - (F + T))
+            return principal + remaining * Q
+        if y == F + math.ceil(R) - 1:
+            frac = 1.0 if (R - floor_R) == 0 else (R - floor_R)
+            return (L / denom) * frac * (1 + Q)
+        return 0.0
+
+    @staticmethod
+    def _pay_lump_principal(L, Q, R, F, y):
+        floor_R = math.floor(R)
+        if F <= y < F + R - 1:
+            return L * Q
+        if y == F + math.ceil(R) - 1:
+            frac = 1.0 if (R - floor_R) == 0 else (R - floor_R)
+            return L + L * Q * frac
+        return 0.0
+
+    @staticmethod
+    def _pay_lump_principal_interest(L, Q, R, F, y):
+        if y == F + math.ceil(R) - 1:
+            return L * (1 + Q) ** R
+        return 0.0
+
+    @staticmethod
+    def _pay_annuity(L, Q, R, F, y):
+        floor_R = math.floor(R)
+        if F <= y < F + floor_R:
+            return -pmt(Q, R, L)
+        if y == F + floor_R:
+            return -pmt(Q, R, L) * (R - floor_R)
+        return 0.0
+
+    @staticmethod
+    def _pay_annuity_grace_p(L, Q, R, T, F, y):
+        floor_R = math.floor(R)
+        if F <= y < F + T:
+            return L * Q
+        if F + T <= y < F + floor_R:
+            return -pmt(Q, R - T, L)
+        if y == F + floor_R:
+            return -pmt(Q, R - T, L) * (R - floor_R)
+        return 0.0
+
+    @staticmethod
+    def _pay_annuity_grace_pi(L, Q, R, T, F, y):
+        floor_R = math.floor(R)
+        pv = L * (1 + Q) ** T
+        if F + T <= y < F + floor_R:
+            return -pmt(Q, R - T, pv)
+        if y == F + floor_R:
+            return -pmt(Q, R - T, pv) * (R - floor_R)
+        return 0.0
+
     def get_discount_rate_for_grant_ele(self):
         # discount_rate = historical['Rate'].max(historical.loc[:,'Type of Finance']=='Loan')
         # First filter rows where 'Type of Finance' is 'Loan'
@@ -244,10 +549,15 @@ class financing_baseline_extractor:
         
         factor = pd.DataFrame([1 if "EPP" in t else 0 for t in financing_schedule_type])
         # #print(factor)
-        grant_element['Grant Element'] = epp_grant_element*factor + lump_grant_element*(1-factor)
+        grant_element["Grant Element"] = epp_grant_element * factor + lump_grant_element * (1 - factor)
 
-        grant_element['Grant Element'] = np.where(financing_schedule_type.str.contains("Equity"), "Equity", grant_element['Grant Element'])
-        return  grant_element
+        # Do not store the literal "Equity" here — mixing str and float coerces the whole column to object strings.
+        grant_element["Grant Element"] = np.where(
+            financing_schedule_type.str.contains("Equity", na=False),
+            np.nan,
+            grant_element["Grant Element"],
+        )
+        return grant_element
     def cal_market_element(self,number_of_payments=None):
         return pd.DataFrame([1 - item if isinstance(item, (int, float)) else item for item in self.cal_grant_element(number_of_payments)['Grant Element']])
     
@@ -327,602 +637,5 @@ class financing_baseline_extractor:
 
         # Other: 0
         return 0.0
-class financing_baseline_stats:
-    def __init__(self, financing_baseline_extractor, repayment_schedule):
-        self.repayment_schedule = repayment_schedule.copy()
-        self.historical = financing_baseline_extractor.get_historical()        
-        # Fill multiple columns at once
-        cols_to_copy = ['Financing Source', 'Type of Finance', 'Volume in USD', 'Term', 'Grace period']
-        self.repayment_schedule.loc[:, cols_to_copy] = self.historical[cols_to_copy]
 
-                
-        self.repayment_schedule['Interest rate'] = self.historical['Rate']
-        # self.repayment_schedule['Financing Source'] = self.historical['Financing Source']
-        # self.repayment_schedule['Type of Finance'] = self.historical['Type of Finance']
-        # self.repayment_schedule['Volume in USD'] = self.historical['Volume in USD']
-        # self.repayment_schedule['Term'] = self.historical['Term']
-        # self.repayment_schedule['Grace period'] = self.historical['Grace period']
-        self.cols = ['Volume (USD)', 'Interest rate', 'Term', 'Grace period', 'Average Annual Payment']#, 'Average Annual Discounted Payment',	'Total Discounted Payment']
-        self.rows = ['Total financing volumes',
-                'Conc_IFI',
-                'Conc_DPS',
-                'Comm_Intl',
-                'Comm_Dom',
-                ]
-    def cal_summary_stats(self):
-        cols = self.cols
-        rows = self.rows
-        repayment_schedule = self.repayment_schedule
-        
-        df_summary_stats = pd.DataFrame(columns=cols,index=rows)
-        for row in rows:
-            # Calculate 'Volume (USD)' for 'Commercial Domestic Finance (Comm Dom)'
-            df_summary_stats.loc[row, 'Volume (USD)'] = self.historical[
-                self.historical['Financing Source'] == row
-            ]['Volume in USD'].sum()
-        
-        for row in rows[1:]:
-            for col in cols[1:]:
-                weighted_data = repayment_schedule[
-                (repayment_schedule['Financing Source'] == row)
-                ][col]* repayment_schedule[
-                (repayment_schedule['Financing Source'] == row)  
-                ][ "Volume in USD"]  
-                df_summary_stats.loc[row, col] = weighted_data.sum() / repayment_schedule[
-                (repayment_schedule['Financing Source'] == row) 
-                ][ "Volume in USD"].sum() 
-        
-            debt_share = repayment_schedule[
-                    (repayment_schedule['Financing Source'] == row)
-                    ][repayment_schedule['Type of Finance'] == 'Loan']['Volume in USD'].sum() / repayment_schedule[
-                    (repayment_schedule['Financing Source'] == row) 
-                    ][ "Volume in USD"].sum()
-            df_summary_stats.loc[row, 'Debt Share'] = debt_share
-            df_summary_stats.loc[row, 'Equity Share'] = 1 - debt_share
-        df_summary_stats.loc[rows[0], 'Volume (USD)'] = df_summary_stats['Volume (USD)'].sum()    
-        
-        return df_summary_stats
-    
-    def cal_equity_debt_stats(self,type_of_finance='Equity'):
-        cols = self.cols
-        rows = self.rows
-        repayment_schedule = self.repayment_schedule
-        df = pd.DataFrame(columns=cols,index=rows)
-        for row in rows[1:]:
-            # Calculate 'Volume (USD)' for 'Commercial Domestic Finance (Comm Dom)'
-            df.loc[row, 'Volume (USD)'] = self.historical[
-                (self.historical['Financing Source'] == row) & (self.historical['Type of Finance'] == type_of_finance)
-            ]['Volume in USD'].sum()
-            
-        df.loc[rows[0], 'Volume (USD)'] = df['Volume (USD)'].sum()
-        # repayment_schedule['Interest rate'] = self.historical['Rate']
-        # repayment_schedule['Financing Source'] = self.historical['Financing Source']
-        # repayment_schedule['Type of Finance'] = self.historical['Type of Finance']
-        # repayment_schedule['Volume in USD'] = self.historical['Volume in USD']
-        # repayment_schedule['Term'] = self.historical['Term']
-        # repayment_schedule['Grace period'] = self.historical['Grace period']
-        for row in rows[1:]:
-            for col in cols[1:]:
-                
-                weighted_data = repayment_schedule[
-                (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
-                ][col]* repayment_schedule[
-                (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
-                ][ "Volume in USD"]  
-                
-                denominator = repayment_schedule[
-                    (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
-                ][ "Volume in USD"].sum()
-                if denominator == 0:
-                    df.loc[row, col] = 0
-                else:
-                    df.loc[row, col] = weighted_data.sum() / denominator
-                 
-                if df.loc[row, col] == float('inf'):
-                    print("inf",repayment_schedule[
-                (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
-                ][ "Volume in USD"].sum(),weighted_data.sum())  
-                    print(repayment_schedule[
-                (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
-                ][col])
-                    print(repayment_schedule[
-                (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
-                ][ "Volume in USD"])
-                    
-                # Select the correct volume column based on currency condition
-                volume_column = "Volume in USD"
-                
-            if type_of_finance in ["Loan", "loan"]:
-                market_element  = repayment_schedule[
-            (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)& ( self.historical['Schedule'] != 'Equity')
-            ]['Market Element']* repayment_schedule[
-            (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)& ( self.historical['Schedule'] != 'Equity')
-            ][ "Volume in USD"]/ repayment_schedule[
-                (repayment_schedule['Financing Source'] == row) & (repayment_schedule['Type of Finance'] == type_of_finance)
-                ][ "Volume in USD"].sum() 
-            
-                df.loc[row, 'Market Element'] = market_element.sum()
-                df.loc[row, 'Grant Element'] = 1 - df.loc[row, 'Market Element']
-                # Compute weighted sum
-                # numerator = (filtered_df[volume_column] * repayment_schedule[col]).sum()
-                
-                # Compute total volume sum
-                # denominator = filtered_df[volume_column].sum()
-                
-                # Avoid division by zero
-                # df.loc[row, col] = numerator / denominator if denominator != 0 else 0    
-        return df
-    def add_weighted_average(self,df):
-        cols = df.columns
-        rows = self.rows
-        for index, col in enumerate(cols[1:]):
-            # #print(index,col)
-            df.iloc[0, index+1] = (df[col][1:]*df['Volume (USD)'][1:]).sum()/df['Volume (USD)'][1:].sum()
-            #  #print(df.iloc[1, index+1])
-        return df
-    def get_repayment_statistics(self):
-        # #print(self.cal_summary_stats().columns)
-        df_summary = self.add_weighted_average(self.cal_summary_stats())
-        df_equity = self.add_weighted_average(self.cal_equity_debt_stats())
-        df_debt = self.add_weighted_average(self.cal_equity_debt_stats(type_of_finance='Loan'))
-        df_final = pd.concat(
-        [df_summary, df_equity, df_debt], 
-        axis=0, 
-        keys=['Summary', 'Equity', 'Debt']  # adding hierarchical index
-        )
-        return df_final  
-        
-    def get_institution_shares(self):
-        rows = ["Bilateral Agency",
-                "Multilateral Agency",
-                "Foreign Government",
-                "National Government",
-                "Domestic Public Sector",
-                "Climate Funds",
-                "Commercial Bank",
-                "Private Equity Fund"
-                ]
-        repayment_schedule = self.repayment_schedule
-        df_institution_shares = pd.DataFrame(index=rows)
-
-        for row in rows:   
-            df_institution_shares.loc[row, 'Share'] = repayment_schedule[(self.historical['Financial Institution'] == row) 
-                ][ "Volume in USD"].sum()/ repayment_schedule.loc[:, "Volume in USD"].sum() 
-            df_institution_shares.loc[row, 'Market Element'] = repayment_schedule[(self.historical['Financial Institution'] == row) & (self.historical['Schedule'] != 'Equity')
-                ][ "Market Element"].mean()#/ repayment_schedule.loc[:, "Volume in USD"].sum() 
-            if repayment_schedule.loc[(self.historical['Financial Institution'] == row), "Volume in USD"].sum() != 0:
-                df_institution_shares.loc[row, 'Debt Share'] = repayment_schedule[(self.historical['Financial Institution'] == row) & (self.historical['Schedule'] != 'Equity')
-                    ][ "Volume in USD"].sum()/ repayment_schedule.loc[(self.historical['Financial Institution'] == row), "Volume in USD"].sum()
-                df_institution_shares.loc[row, 'Equity Share'] = repayment_schedule[(self.historical['Financial Institution'] == row) & (self.historical['Schedule'] == 'Equity')
-                    ][ "Volume in USD"].sum()/ repayment_schedule.loc[(self.historical['Financial Institution'] == row), "Volume in USD"].sum()
-                
-        return df_institution_shares
-    
-    def get_financing_sector_shares(self):
-        rows = ["Public",
-                "Private",
-                "Comm_Dom",
-                "Comm_Intl",
-                "Conc_DPS",
-                "Conc_IFI",
-                ]
-        repayment_schedule = self.repayment_schedule
-        df_financing_sector_shares = pd.DataFrame(index=rows)
-        # #print(self.historical.columns)
-        for row in rows: 
-            
-            df_financing_sector_shares.loc[row,'Share'] = repayment_schedule[(self.historical['Financing Sector'] == row) | (self.historical['Financing Source'] == row)
-            ][ "Volume in USD"].sum()/ repayment_schedule.loc[ :,"Volume in USD"].sum() 
-        
-        df_financing_sector_shares.loc["Domestic","Share"] = df_financing_sector_shares.loc["Comm_Dom", "Share"] + df_financing_sector_shares.loc["Conc_DPS", "Share"]
-        df_financing_sector_shares.loc["International","Share"] = df_financing_sector_shares.loc["Comm_Intl", "Share"] + df_financing_sector_shares.loc["Conc_IFI", "Share"]
-        df_financing_sector_shares.drop(["Comm_Dom", "Comm_Intl", "Conc_DPS", "Conc_IFI"], inplace=True)
-        return df_financing_sector_shares   
-    
-    def get_technology_stats(self):
-        rows = self.historical['Technology'].unique()
-        repayment_schedule = self.repayment_schedule
-        df_technology_stats = pd.DataFrame(index=rows)
-        
-        for row in rows:
-            df_technology_stats.loc[row, 'IRR'] = self.historical[(self.historical['Technology'] == row)& (self.historical['Schedule'] == 'Equity')
-                ][ "Rate"].mean()
-            df_technology_stats.loc[row, 'Volume of Finance'] = self.historical[(self.historical['Technology'] == row)
-                ][ "Volume in USD"].sum()
-            df_technology_stats.loc[row, 'Interest Rate'] = self.historical[(self.historical['Technology'] == row)& (self.historical['Schedule'] != 'Equity')
-                ][ "Rate"].mean()
-            df_technology_stats.loc[row, 'Debt Share'] = self.historical[(self.historical['Technology'] == row)&(self.historical['Schedule'] != 'Equity')
-                ][ "Volume in USD"].sum()/df_technology_stats.loc[row, 'Volume of Finance']
-            df_technology_stats.loc[row, 'Equity Share'] = self.historical[(self.historical['Technology'] == row)&(self.historical['Schedule'] == 'Equity')
-                ][ "Volume in USD"].sum()/df_technology_stats.loc[row, 'Volume of Finance']
-            
-        df_technology_stats.fillna(0, inplace=True)
-        df_technology_stats.loc[:, 'WACC'] = df_technology_stats.loc[:, 'IRR'] * df_technology_stats.loc[:, 'Equity Share'] + df_technology_stats.loc[:, 'Interest Rate'] * df_technology_stats.loc[:, 'Debt Share']
-        df_technology_stats.index.name = "Technology"
-        return df_technology_stats
-    
-    def get_technology_financing_requirement(self):
-        """
-        Calculate financing requirement metrics for each technology broken down by source.
-        
-        Returns:
-        -------
-        DataFrame
-            Multi-level indexed DataFrame with financing requirements by technology and source
-            First level: Source (Conc_IFI, Conc_DPS, etc.)
-            Second level: Metric (Debt Equity Share, Average interest rate, etc.)
-        """
-        # Get unique technologies and sources
-        technologies = self.historical['Technology'].unique()
-        sources = ["Conc_IFI", "Conc_DPS", "Comm_Intl", "Comm_Dom", "Average"]
-        
-        # Metrics to calculate
-        metrics = [
-            'Debt Equity Share',
-            'Average interest rate', 
-            'Average grace period (years)', 
-            'Average term of loan (years)',
-            'Average grant element'
-        ]
-        
-        # Create a dictionary to store DataFrames for each source
-        result_dict = {}
-        
-        # First process each regular source (excluding "Average")
-        for source in sources[:-1]:  # Skip "Average" for now
-            # Create a nested dictionary for metrics under this source
-            source_metrics = {}
-            
-            # Process each metric for this source
-            for metric in metrics:
-                # Create DataFrame for this metric and source
-                metric_df = pd.DataFrame(index=technologies, 
-                                        columns=['Debt', 'Equity', 'Total'])
-                
-                # Process each technology for this source and metric
-                for tech in technologies:
-                    tech_data = self.historical[self.historical['Technology'] == tech]
-                    
-                    if tech_data.empty:
-                        continue
-                        
-                    # Filter for this source
-                    source_data = tech_data[tech_data['Financing Source'] == source]
-                    
-                    if source_data.empty:
-                        continue
-                    
-                    # Total volume for this technology and source
-                    total_volume = source_data['Volume in USD'].sum()
-                    
-                    # Calculate debt and equity volumes
-                    debt_volume = source_data[source_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
-                    equity_volume = source_data[source_data['Type of Finance'] == 'Equity']['Volume in USD'].sum()
-                    
-                    # Skip if no volume data
-                    if total_volume == 0:
-                        continue
-                    
-                    # Calculate shares
-                    debt_share = debt_volume / total_volume if total_volume > 0 else 0
-                    equity_share = equity_volume / total_volume if total_volume > 0 else 0
-                    
-                    # Process based on metric type
-                    if metric == 'Debt Equity Share':
-                        metric_df.loc[tech, 'Debt'] = debt_share * 100
-                        metric_df.loc[tech, 'Equity'] = equity_share * 100
-                        metric_df.loc[tech, 'Total'] = 100.0
-                    
-                    elif metric == 'Average interest rate':
-                        # Debt interest rate (weighted by volume)
-                        if debt_volume > 0:
-                            debt_interest = (source_data[source_data['Type of Finance'] == 'Loan']['Rate'] * 
-                                           source_data[source_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
-                            metric_df.loc[tech, 'Debt'] = debt_interest * 100
-                        
-                        # Equity interest rate (weighted by volume)
-                        if equity_volume > 0:
-                            equity_interest = (source_data[source_data['Type of Finance'] == 'Equity']['Rate'] * 
-                                             source_data[source_data['Type of Finance'] == 'Equity']['Volume in USD']).sum() / equity_volume
-                            metric_df.loc[tech, 'Equity'] = equity_interest * 100
-                        
-                        # Total weighted average
-                        metric_df.loc[tech, 'Total'] = (
-                            (debt_interest * debt_volume if debt_volume > 0 else 0) + 
-                            (equity_interest * equity_volume if equity_volume > 0 else 0)
-                        ) / total_volume * 100
-                    
-                    elif metric == 'Average grace period (years)':
-                        # Grace period is only for debt
-                        if debt_volume > 0:
-                            grace_period = (source_data[source_data['Type of Finance'] == 'Loan']['Grace period'] * 
-                                          source_data[source_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
-                            metric_df.loc[tech, 'Debt'] = grace_period
-                            metric_df.loc[tech, 'Total'] = grace_period * debt_share
-                        
-                        metric_df.loc[tech, 'Equity'] = 0.0  # No grace period for equity
-                    
-                    elif metric == 'Average term of loan (years)':
-                        debt_term = 0
-                        equity_term = 0
-                        
-                        # Term for debt
-                        if debt_volume > 0:
-                            debt_term = (source_data[source_data['Type of Finance'] == 'Loan']['Term'] * 
-                                       source_data[source_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
-                            metric_df.loc[tech, 'Debt'] = debt_term
-                        
-                        # Term for equity
-                        if equity_volume > 0:
-                            equity_term = (source_data[source_data['Type of Finance'] == 'Equity']['Term'] * 
-                                         source_data[source_data['Type of Finance'] == 'Equity']['Volume in USD']).sum() / equity_volume
-                            metric_df.loc[tech, 'Equity'] = equity_term
-                        
-                        # Total weighted average
-                        metric_df.loc[tech, 'Total'] = (
-                            (debt_term * debt_volume if debt_volume > 0 else 0) + 
-                            (equity_term * equity_volume if equity_volume > 0 else 0)
-                        ) / total_volume
-                    
-                    elif metric == 'Average grant element':
-                        # Grant element is only for debt
-                        if debt_volume > 0:
-                            # Match historical data with repayment schedule
-                            debt_data_ids = source_data[source_data['Type of Finance'] == 'Loan'].index
-                            
-                            # Get grant elements from repayment schedule for these IDs
-                            grant_elements = []
-                            for idx in debt_data_ids:
-                                if idx < len(self.repayment_schedule):
-                                    grant_element = self.repayment_schedule.loc[idx, 'Grant Element']
-                                    volume = source_data.loc[idx, 'Volume in USD']
-                                    if isinstance(grant_element, (int, float)) and not pd.isna(grant_element):
-                                        grant_elements.append((grant_element, volume))
-                            
-                            # Calculate weighted average
-                            if grant_elements:
-                                total_grant_element = sum(ge * vol for ge, vol in grant_elements)
-                                total_volume_with_ge = sum(vol for _, vol in grant_elements)
-                                weighted_grant_element = total_grant_element / total_volume_with_ge if total_volume_with_ge > 0 else 0
-                                
-                                metric_df.loc[tech, 'Debt'] = weighted_grant_element * 100
-                                metric_df.loc[tech, 'Total'] = weighted_grant_element * debt_share * 100
-                            
-                        metric_df.loc[tech, 'Equity'] = float('nan')  # No grant element for equity
-                
-                # Store this metric's DataFrame in the source_metrics dictionary
-                source_metrics[metric] = metric_df
-            
-            # Combine all metrics for this source into a DataFrame and add it to result_dict
-            source_df = pd.concat(source_metrics, names=['Metric'])
-            result_dict[source] = source_df
-        
-        # Now handle the "Average" source - calculating overall averages
-        source_metrics = {}
-        
-        for metric in metrics:
-            avg_metric_df = pd.DataFrame(index=technologies, columns=['Debt', 'Equity', 'Total'])
-            
-            for tech in technologies:
-                # Get all data for this technology across all sources
-                tech_data = self.historical[self.historical['Technology'] == tech]
-                
-                if tech_data.empty:
-                    continue
-                
-                total_volume = tech_data['Volume in USD'].sum()
-                if total_volume == 0:
-                    continue
-                
-                # Calculate weighted averages across all sources
-                # This varies by metric
-                if metric == 'Debt Equity Share':
-                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
-                    equity_volume = tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD'].sum()
-                    
-                    debt_share = debt_volume / total_volume
-                    equity_share = equity_volume / total_volume
-                    
-                    avg_metric_df.loc[tech, 'Debt'] = debt_share * 100
-                    avg_metric_df.loc[tech, 'Equity'] = equity_share * 100
-                    avg_metric_df.loc[tech, 'Total'] = 100.0
-                
-                elif metric == 'Average interest rate':
-                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
-                    equity_volume = tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD'].sum()
-                    
-                    debt_interest = 0
-                    equity_interest = 0
-                    
-                    if debt_volume > 0:
-                        debt_interest = (tech_data[tech_data['Type of Finance'] == 'Loan']['Rate'] * 
-                                       tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
-                        avg_metric_df.loc[tech, 'Debt'] = debt_interest 
-                    
-                    if equity_volume > 0:
-                        equity_interest = (tech_data[tech_data['Type of Finance'] == 'Equity']['Rate'] * 
-                                         tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD']).sum() / equity_volume
-                        avg_metric_df.loc[tech, 'Equity'] = equity_interest 
-                    
-                    avg_metric_df.loc[tech, 'Total'] = (
-                        (debt_interest * debt_volume if debt_volume > 0 else 0) + 
-                        (equity_interest * equity_volume if equity_volume > 0 else 0)
-                    ) / total_volume * 100 if total_volume > 0 else 0
-                
-                elif metric == 'Average grace period (years)':
-                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
-                    if debt_volume > 0:
-                        grace_period = (tech_data[tech_data['Type of Finance'] == 'Loan']['Grace period'] * 
-                                      tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
-                        avg_metric_df.loc[tech, 'Debt'] = grace_period
-                        avg_metric_df.loc[tech, 'Total'] = grace_period * debt_volume / total_volume
-                    
-                    avg_metric_df.loc[tech, 'Equity'] = 0.0
-                
-                elif metric == 'Average term of loan (years)':
-                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
-                    equity_volume = tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD'].sum()
-                    
-                    debt_term = 0
-                    equity_term = 0
-                    
-                    if debt_volume > 0:
-                        debt_term = (tech_data[tech_data['Type of Finance'] == 'Loan']['Term'] * 
-                                   tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD']).sum() / debt_volume
-                        avg_metric_df.loc[tech, 'Debt'] = debt_term
-                    
-                    if equity_volume > 0:
-                        equity_term = (tech_data[tech_data['Type of Finance'] == 'Equity']['Term'] * 
-                                     tech_data[tech_data['Type of Finance'] == 'Equity']['Volume in USD']).sum() / equity_volume
-                        avg_metric_df.loc[tech, 'Equity'] = equity_term
-                    
-                    avg_metric_df.loc[tech, 'Total'] = (
-                        (debt_term * debt_volume if debt_volume > 0 else 0) + 
-                        (equity_term * equity_volume if equity_volume > 0 else 0)
-                    ) / total_volume if total_volume > 0 else 0
-                
-                elif metric == 'Average grant element':
-                    debt_volume = tech_data[tech_data['Type of Finance'] == 'Loan']['Volume in USD'].sum()
-                    if debt_volume > 0:
-                        # Match historical data with repayment schedule for all sources
-                        debt_data_ids = tech_data[tech_data['Type of Finance'] == 'Loan'].index
-                        
-                        # Get grant elements
-                        grant_elements = []
-                        for idx in debt_data_ids:
-                            if idx < len(self.repayment_schedule):
-                                grant_element = self.repayment_schedule.loc[idx, 'Grant Element']
-                                volume = tech_data.loc[idx, 'Volume in USD']
-                                if isinstance(grant_element, (int, float)) and not pd.isna(grant_element):
-                                    grant_elements.append((grant_element, volume))
-                        
-                        if grant_elements:
-                            total_grant_element = sum(ge * vol for ge, vol in grant_elements)
-                            total_volume_with_ge = sum(vol for _, vol in grant_elements)
-                            weighted_grant_element = total_grant_element / total_volume_with_ge if total_volume_with_ge > 0 else 0
-                            
-                            avg_metric_df.loc[tech, 'Debt'] = weighted_grant_element * 100
-                            debt_share = debt_volume / total_volume
-                            avg_metric_df.loc[tech, 'Total'] = weighted_grant_element * debt_share * 100
-                    
-                    avg_metric_df.loc[tech, 'Equity'] = float('nan')
-            
-            # Store this metric's average DataFrame in the source_metrics dictionary
-            source_metrics[metric] = avg_metric_df
-        
-        # Combine all metrics for the "Average" source and add to result_dict
-        avg_source_df = pd.concat(source_metrics, names=['Metric'])
-        result_dict["Average"] = avg_source_df
-        
-        # Combine all sources into a multi-level DataFrame
-        final_result = pd.concat(result_dict, names=['Source'])
-        
-        # Sort the MultiIndex to fix the PerformanceWarning
-        final_result = final_result.sort_index()
-        
-        return final_result
-    
-    def get_technology_summary_table(self):
-        """
-        Generate a summary table of financing metrics organized by technology.
-        
-        Returns:
-        -------
-        DataFrame
-            A table with technologies as rows and financing metrics as columns.
-            Includes debt/equity shares, interest rates, terms, and other key metrics.
-        """
-        # Get technology financing requirement data
-        tech_financing = self.get_technology_financing_requirement()
-        
-        # Get the list of unique technologies
-        technologies = self.historical['Technology'].unique()
-        
-        # Create a new DataFrame for the summary table
-        summary = pd.DataFrame(index=technologies)
-        
-        # Extract data from the "Average" source (which has aggregated metrics)
-        avg_data = tech_financing.xs('Average', level='Source')
-        
-        # Add debt/equity shares
-        summary['Debt Share (%)'] = avg_data.xs('Debt Equity Share', level='Metric')['Debt']
-        summary['Equity Share (%)'] = avg_data.xs('Debt Equity Share', level='Metric')['Equity']
-        
-        # Add interest rates
-        summary['Debt Interest Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Debt']
-        summary['Equity Return Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Equity']
-        summary['Combined Interest Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Total']
-        
-        # Add loan terms
-        summary['Loan Term (years)'] = avg_data.xs('Average term of loan (years)', level='Metric')['Debt']
-        summary['Grace Period (years)'] = avg_data.xs('Average grace period (years)', level='Metric')['Debt']
-        
-        # Add grant element
-        summary['Grant Element (%)'] = avg_data.xs('Average grant element', level='Metric')['Debt']
-        
-        # Calculate Weighted Average Cost of Capital (WACC)
-        summary['WACC (%)'] = (summary['Debt Interest Rate (%)'] * summary['Debt Share (%)'] / 100 + 
-                             summary['Equity Return Rate (%)'] * summary['Equity Share (%)'] / 100)
-        
-        # Add volume data from technology stats
-        tech_stats = self.get_technology_stats()
-        summary['Volume of Finance (USD)'] = tech_stats['Volume of Finance']
-        
-        # Set technology as the index name
-        summary.index.name = "Technology"
-        
-        return summary
-    
-    def get_technology_financing_by_source(self, technology=None, metric='all'):
-        """
-        Generate a table showing how a specific technology is financed across different sources,
-        or how a specific metric varies across technologies and sources.
-        
-        Parameters:
-        ----------
-        technology : str, optional
-            Filter for a specific technology. If None, includes all technologies.
-        metric : str, optional
-            Filter for a specific metric. Default is 'all' which includes all metrics.
-            Options: 'all', 'Debt Equity Share', 'Average interest rate', 
-                    'Average grace period (years)', 'Average term of loan (years)',
-                    'Average grant element'
-                    
-        Returns:
-        -------
-        DataFrame
-            A table showing financing data by source, filtered by technology and/or metric as specified.
-        """
-        # Define valid metrics
-        valid_metrics = [
-            'Debt Equity Share',
-            'Average interest rate', 
-            'Average grace period (years)', 
-            'Average term of loan (years)',
-            'Average grant element'
-        ]
-        
-        # Get technology financing requirement data
-        tech_financing = self.get_technology_financing_requirement()
-        
-        # Filter by technology if specified
-        if technology is not None:
-            if technology not in self.historical['Technology'].unique():
-                raise ValueError(f"Technology '{technology}' not found in data")
-            tech_financing = tech_financing.xs(technology, level=2, drop_level=False)
-        
-        # Filter by metric if specified
-        if metric != 'all':
-            if metric not in valid_metrics:
-                raise ValueError(f"Metric '{metric}' not valid. Choose from: {valid_metrics} or 'all'")
-            tech_financing = tech_financing.xs(metric, level='Metric')
-        
-        # Reorganize data for better presentation
-        # If we have a specific technology and specific metric (not 'all'), we can reshape
-        if technology is not None and metric != 'all':
-            result = tech_financing.droplevel(2)  # Drop the technology level since it's redundant
-            return result
-        
-        return tech_financing
-    
-    
+from MinFin.financing_stats import financing_baseline_stats

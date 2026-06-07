@@ -3,25 +3,40 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
 
 from .definitions_io import Technology
+from .index_alignment import ensure_year_index
 
 DEFAULT_SINCE_YEAR = 2025
 
 
 def filter_data(data: pd.DataFrame, since_year: int = DEFAULT_SINCE_YEAR) -> pd.DataFrame:
-    """Restrict rows to years >= *since_year* using a ``Year`` column or a numeric index."""
-    col_to_use = "Year" if "Year" in data.columns else None
-    if col_to_use is None:
-        data_index_numeric = pd.to_numeric(data.index, errors="coerce")
-        return data.loc[data_index_numeric >= since_year]
-    data = data.copy()
-    data["Year"] = pd.to_numeric(data["Year"], errors="coerce")
-    return data[data["Year"] >= since_year]
+    """Restrict rows to years >= *since_year* and return a year-indexed frame when possible."""
+    if data is None:
+        return pd.DataFrame()
+    if data.empty:
+        return data.copy()
+
+    frame = ensure_year_index(data.copy())
+    year_index = pd.to_numeric(frame.index, errors="coerce")
+    valid_years = year_index.notna()
+    if valid_years.any():
+        keep = valid_years & (year_index >= since_year)
+        filtered = frame.loc[keep]
+        filtered.index = year_index[keep].astype(int)
+        filtered.index.name = "Year"
+        return filtered
+
+    if "Year" in frame.columns:
+        frame["Year"] = pd.to_numeric(frame["Year"], errors="coerce")
+        frame = frame[frame["Year"] >= since_year]
+        return ensure_year_index(frame)
+
+    return frame
 
 
 def aggregate_by_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
@@ -44,24 +59,44 @@ def cal_invest_needs(
     full_cap_cost_least_cost: pd.DataFrame,
     full_cap_cost_net_zero: pd.DataFrame,
     df_technologies: pd.DataFrame,
+    *,
+    pure_input_file_path: Optional[str] = None,
 ):
-    """Build investment-need tables from OSeMOSYS / FFRM–style inputs."""
-    df_emission_savings = pd.DataFrame()
-    df_emission_savings["emission_savings"] = (
-        least_cost_summary["co2_emission"] - net_zero_summary["co2_emission"]
-    )
+    """Build investment-need tables from OSeMOSYS / FFRM–style inputs.
 
-    fossil_fuel_savings = filter_data(df_ffe_least_cost) - filter_data(df_ffe_net_zero)
-    fossil_fuel_no_earnings = fossil_fuel_savings.drop(columns=["Total", "Year"], errors="ignore").copy()
-    fossil_fuel_no_earnings.iloc[:, :] = fossil_fuel_no_earnings.map(lambda x: max(x, 0))
+    If *pure_input_file_path* is set, ``emission_savings`` is read from **INVESTMENT PLAN**
+    (``emission_savings_series_from_investment_plan``) instead of ``least_cost_summary - net_zero_summary`` CO₂.
+    """
+    df_emission_savings = pd.DataFrame(index=net_zero_summary.index)
+    if pure_input_file_path:
+        from MinFin.data_processor import emission_savings_series_from_investment_plan
+
+        df_emission_savings["emission_savings"] = emission_savings_series_from_investment_plan(
+            pure_input_file_path, net_zero_summary.index
+        )
+    else:
+        df_emission_savings["emission_savings"] = (
+            least_cost_summary["co2_emission"] - net_zero_summary["co2_emission"]
+        )
 
     filtered_least_cost = filter_data(df_ffe_least_cost)
-    if "Year" in filtered_least_cost.columns:
-        fossil_fuel_savings["Year"] = filtered_least_cost["Year"].astype(int)
-    else:
-        fossil_fuel_savings["Year"] = pd.to_numeric(filtered_least_cost.index, errors="coerce").astype(int)
+    filtered_net_zero = filter_data(df_ffe_net_zero)
+    fossil_fuel_savings = filtered_least_cost - filtered_net_zero
+    fossil_fuel_no_earnings = fossil_fuel_savings.drop(columns=["Total"], errors="ignore").copy()
+    fossil_fuel_no_earnings.iloc[:, :] = fossil_fuel_no_earnings.map(lambda x: max(x, 0))
+
+    years = pd.to_numeric(fossil_fuel_savings.index, errors="coerce")
+    if years.isna().any():
+        raise ValueError(
+            "Could not align years to fossil fuel savings rows. "
+            "Ensure FFE frames share a Year column or a Year-named index, "
+            "and least-cost vs net-zero FFE shapes are compatible."
+        )
+
+    fossil_fuel_savings = fossil_fuel_savings.copy()
+    fossil_fuel_savings.index = years.astype(int)
+    fossil_fuel_savings.index.name = "Year"
     fossil_fuel_savings["expenditure"] = fossil_fuel_no_earnings.sum(axis=1)
-    fossil_fuel_savings = fossil_fuel_savings.set_index("Year")
 
     tech_list = ["Oil", "Gas", "Coal"]
     total_cols = [(tech, tech) for tech in tech_list]
@@ -83,8 +118,8 @@ def cal_invest_needs(
     df_cap_by_class_nz = aggregate_by_mapping(full_cap_cost_net_zero, tech_category_map)
     df_cap_by_tech_nz = aggregate_by_mapping(full_cap_cost_net_zero, name_to_tech_map)
 
-    df_category_sum_lc = pd.concat([df_cap_by_class_lc, df_cap_by_tech_lc], axis=1)
-    df_category_sum_nz = pd.concat([df_cap_by_class_nz, df_cap_by_tech_nz], axis=1)
+    df_category_sum_lc = get_category_sum(df_cap_by_class_lc, df_cap_by_tech_lc)
+    df_category_sum_nz = get_category_sum(df_cap_by_class_nz, df_cap_by_tech_nz)
     return (
         df_cap_by_class_lc,
         df_cap_by_tech_lc,
@@ -97,7 +132,8 @@ def cal_invest_needs(
 
 
 def get_category_sum(by_class: pd.DataFrame, by_tech: pd.DataFrame) -> pd.DataFrame:
-    return pd.concat([by_class, by_tech], axis=1)
+    """Concatenate class and technology capital tables on a shared year index."""
+    return pd.concat([ensure_year_index(by_class), ensure_year_index(by_tech)], axis=1)
 
 
 def cal_weighted_avg(data: pd.DataFrame, weights: pd.DataFrame) -> pd.DataFrame:
@@ -107,9 +143,13 @@ def cal_weighted_avg(data: pd.DataFrame, weights: pd.DataFrame) -> pd.DataFrame:
 
 def aggregate_tech_production(df: pd.DataFrame, technologies: list) -> pd.DataFrame:
     """Sum generation columns by technology name using *technologies* name→code mapping."""
+    source = ensure_year_index(df)
     code_to_name = {t.name: t.technology for t in technologies}
     name_to_cols: dict[str, list] = defaultdict(list)
-    for col in df.columns:
+    for col in source.columns:
         if col in code_to_name:
             name_to_cols[code_to_name[col]].append(col)
-    return pd.DataFrame({name: df[cols].sum(axis=1) for name, cols in name_to_cols.items()}, index=df.index)
+    return pd.DataFrame(
+        {name: source[cols].sum(axis=1) for name, cols in name_to_cols.items()},
+        index=source.index,
+    )

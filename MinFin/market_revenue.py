@@ -7,23 +7,13 @@ from typing import Any, List, Sequence, Tuple, Union
 import pandas as pd
 import plotly.graph_objects as go
 
+from MinFin.fx import fx_rate_lookup as fx_rate
+
 
 def get_row_by_year(df: pd.DataFrame, year: int) -> pd.Series:
     """Return the row for *year*; index may be int or string."""
     y = year if year in df.index else str(year)
     return df.loc[y]
-
-
-def fx_rate(currency_code: str, exchange_rates: Any) -> float:
-    """Look up FX; supports dict-like *exchange_rates* with ``.get``."""
-    try:
-        if isinstance(exchange_rates, dict):
-            return float(exchange_rates.get(currency_code, 1.0))
-        if hasattr(exchange_rates, "get"):
-            return float(exchange_rates.get(currency_code, 1.0))
-    except Exception:
-        pass
-    return 1.0
 
 
 def split_market_revenue(

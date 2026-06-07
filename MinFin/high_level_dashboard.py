@@ -1,7 +1,8 @@
 from dataclasses import dataclass
-from .utils import *  
-from .data_processor import process_funding_baseline
-from .data_processor import get_funding_envelope
+
+from .data_processor import get_funding_envelope, process_funding_baseline
+from .excel_io import year_columns_from_index
+from .utils import cal_equity_needs, cal_loan_needs
 from typing import Union
 
 
@@ -333,7 +334,9 @@ class high_level_dashboard:
                 "Capital Injection Repayment (Million USD)",
             ]
         
-        year_cols = [col for col in repayment_schedule.columns if type(col) == int and int(col) >= self.years[0]]
+        year_cols = year_columns_from_index(
+            repayment_schedule.columns, since_year=self.years[0]
+        )
         existing_finance_payments = repayment_schedule[year_cols].sum()
         
         df_repayments = pd.DataFrame(index=rows, columns=cols)
@@ -514,9 +517,9 @@ class high_level_dashboard:
             #We may remove this if else and just set the default scenario as NetZero
             raise InProgressError("This feature is still in progress.")
         investment_need.index = self.years
-        year_cols = [col for col in repayment_schedule.columns if type(col) == int and int(col) >= self.years[0]]
-
-        # Sum these columns
+        year_cols = year_columns_from_index(
+            repayment_schedule.columns, since_year=self.years[0]
+        )
         existing_finance_payments = repayment_schedule[year_cols].sum()
         financing_requirement = financing_requirement+existing_finance_payments
         # df_result = pd.concat(
