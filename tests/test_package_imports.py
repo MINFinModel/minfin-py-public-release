@@ -2,21 +2,41 @@
 
 
 def test_additional_workflow_modules_import():
+    from MinFin import detect_workbook_format, load_excel_data
+    from MinFin.excel_io import year_columns_from_dataframe
+    from MinFin.fx import get_exchange_rates
+    from MinFin.workbook_format import WORKBOOK_FORMAT_PURE_INPUT
+
+    assert callable(detect_workbook_format)
+    assert callable(load_excel_data)
+    assert callable(get_exchange_rates)
+    assert WORKBOOK_FORMAT_PURE_INPUT == "pure_input"
+
     from MinFin.definitions_io import Technology, load_technologies_from_dataframe
     from MinFin.disag_tables import build_disag_table, DisagLookupConfig
     from MinFin.funding_allocation import InvestmentAllocator, TechnologyStats
     from MinFin.investment_needs_extra import filter_data, cal_weighted_avg
     from MinFin.market_revenue import aggregate_market_revenue_stacks, split_market_revenue
+    from MinFin.output_export import build_technology_parameter_raw_table
+    from MinFin import CapitalInjection, EconomicParameters, Scenarios
     from MinFin.high_level_dashboard import hd, high_level_dashboard
     from MinFin.notebook_dashboard import NotebookHighLevelDashboard
     from MinFin.plotting_notebook import stacked_area_fig, plot_technology_cashflow_waterfall
     from MinFin.repayment_extras import _calc_debt_logic
-    from MinFin.technology_sheet_io import TECH_START_ROWS, extract_tech_data_relative
+    from MinFin.technology_sheet_io import (
+        TECH_START_ROWS,
+        extract_tech_data_pure_input,
+        extract_tech_data_relative,
+    )
 
     assert TECH_START_ROWS["Biomass"] == 83
     assert hd is high_level_dashboard
+    assert EconomicParameters.gdp_growth_rate == 0.03
+    assert Scenarios.scenario == "NetZero"
+    assert CapitalInjection.type == "grant"
     assert NotebookHighLevelDashboard is high_level_dashboard
     assert callable(extract_tech_data_relative)
+    assert callable(extract_tech_data_pure_input)
     assert callable(_calc_debt_logic)
     assert callable(load_technologies_from_dataframe)
     assert callable(build_disag_table)
@@ -26,3 +46,4 @@ def test_additional_workflow_modules_import():
     assert callable(plot_technology_cashflow_waterfall)
     assert callable(split_market_revenue)
     assert callable(aggregate_market_revenue_stacks)
+    assert callable(build_technology_parameter_raw_table)

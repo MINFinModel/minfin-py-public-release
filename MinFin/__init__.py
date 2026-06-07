@@ -23,12 +23,21 @@ from MinFin.financing_baseline import (
     financing_baseline_stats,
     get_exchange_rates,
 )
-from MinFin.high_level_dashboard import hd, high_level_dashboard
+from MinFin.high_level_dashboard import (
+    CapitalInjection,
+    EconomicParameters,
+    Scenarios,
+    hd,
+    high_level_dashboard,
+)
 
 __all__ = [
     "WORKBOOK_FORMAT_AUTO",
     "WORKBOOK_FORMAT_LEGACY",
     "WORKBOOK_FORMAT_PURE_INPUT",
+    "CapitalInjection",
+    "EconomicParameters",
+    "Scenarios",
     "detect_workbook_format",
     "emission_savings_series_from_investment_plan",
     "financing_baseline_extractor",
