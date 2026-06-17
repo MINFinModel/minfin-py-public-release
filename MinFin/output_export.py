@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from MinFin.excel_io import year_columns_from_index
 from MinFin.offtaker_tariffs import _classify_segment, _get_tech_class
 from MinFin.technology_sheet_io import PURE_INPUT_STATIC_FIELD_SOURCES
 
@@ -72,10 +73,17 @@ INVESTMENT_BLOCK_VARIABLES = (
     "elec_production",
     "potential_generation",
     "opex",
-    "ffe",
+    # "ffe",  # Temporarily excluded: pure-input workbooks have no FFE series (zeros only).
     "co2_emission",
     "emission_savings",
     "carbon_price",
+)
+
+ECONOMY_DIM = "Economy"
+
+ECONOMY_METRIC_VARIABLES = (
+    "financing_baseline",
+    "existing_financing_requirement",
 )
 
 # Computed outputs inherit units from related workbook variables when possible.
@@ -100,6 +108,8 @@ COMPUTED_VARIABLE_UNIT_SOURCES: dict[str, str] = {
     "interest_cost": "total_grant_amount",
     "cashflow": "total_grant_amount",
     "Financing Requirement": "total_grant_amount",
+    "financing_baseline": "total_grant_amount",
+    "existing_financing_requirement": "total_grant_amount",
 }
 
 DEFAULT_VARIABLE_UNITS: dict[str, str] = {
@@ -122,6 +132,8 @@ DEFAULT_VARIABLE_UNITS: dict[str, str] = {
     "interest_cost": "Mn USD",
     "cashflow": "Mn USD",
     "Financing Requirement": "Mn USD",
+    "financing_baseline": "Mn USD",
+    "existing_financing_requirement": "Mn USD",
 }
 
 
@@ -316,6 +328,64 @@ def _variable_unit(
     return DEFAULT_VARIABLE_UNITS.get(variable, "")
 
 
+def _repayment_schedule_year_columns(
+    repayment_schedule: pd.DataFrame,
+    *,
+    since_year: int | None = None,
+) -> list[int]:
+    return year_columns_from_index(repayment_schedule.columns, since_year=since_year)
+
+
+def compute_financing_baseline_by_year(repayment_schedule: pd.DataFrame) -> pd.Series:
+    """Annual repayment totals from the historic financing-baseline portfolio (all years)."""
+    year_cols = _repayment_schedule_year_columns(repayment_schedule)
+    if not year_cols:
+        return pd.Series(dtype=float, name="financing_baseline")
+    totals = repayment_schedule[year_cols].sum()
+    totals.index = totals.index.astype(int)
+    return totals.sort_index().rename("financing_baseline")
+
+
+def compute_existing_financing_requirement_by_year(
+    repayment_schedule: pd.DataFrame,
+    years: Iterable | None = None,
+) -> pd.Series:
+    """Annual repayment totals for model projection years (existing debt service)."""
+    if years is not None:
+        year_set = {int(y) for y in years}
+        year_cols = [y for y in _repayment_schedule_year_columns(repayment_schedule) if y in year_set]
+    else:
+        year_cols = _repayment_schedule_year_columns(repayment_schedule)
+    if not year_cols:
+        return pd.Series(dtype=float, name="existing_financing_requirement")
+    totals = repayment_schedule[year_cols].sum()
+    totals.index = totals.index.astype(int)
+    return totals.sort_index().rename("existing_financing_requirement")
+
+
+def _append_economy_metric_records(
+    records: list[dict],
+    *,
+    variable: str,
+    series: pd.Series,
+    scenario: str,
+    unit: str,
+    include_unit_dim: bool,
+) -> None:
+    if series is None or series.empty:
+        return
+    _append_records(
+        records,
+        variable=variable,
+        tech_name=ECONOMY_DIM,
+        values=series.tolist(),
+        years=series.index.tolist(),
+        scenario=scenario,
+        unit=unit,
+        include_unit_dim=include_unit_dim,
+    )
+
+
 def _append_records(
     records: list[dict],
     *,
@@ -415,6 +485,8 @@ def build_technology_output_raw_table(
     df_technologies: Optional[pd.DataFrame] = None,
     variable_units: Optional[dict[str, str]] = None,
     years: Iterable | None = None,
+    repayment_schedule: Optional[pd.DataFrame] = None,
+    economy_metrics: Optional[dict[str, pd.Series]] = None,
     scenario: str = "Net Zero",
     include_unit_dim: bool = True,
 ) -> pd.DataFrame:
@@ -536,6 +608,30 @@ def build_technology_output_raw_table(
                 include_unit_dim=include_unit_dim,
             )
 
+    economy_series = dict(economy_metrics or {})
+    if repayment_schedule is not None and not repayment_schedule.empty:
+        economy_series.setdefault(
+            "financing_baseline",
+            compute_financing_baseline_by_year(repayment_schedule),
+        )
+        economy_series.setdefault(
+            "existing_financing_requirement",
+            compute_existing_financing_requirement_by_year(repayment_schedule, years=years),
+        )
+
+    for variable in ECONOMY_METRIC_VARIABLES:
+        series = economy_series.get(variable)
+        if series is None or getattr(series, "empty", True):
+            continue
+        _append_economy_metric_records(
+            records,
+            variable=variable,
+            series=series,
+            scenario=scenario,
+            unit=_variable_unit(variable, variable_units=variable_units),
+            include_unit_dim=include_unit_dim,
+        )
+
     df = pd.DataFrame(records, columns=RAW_INPUT_COLUMNS)
     if df.empty:
         return df
@@ -604,6 +700,8 @@ def export_technology_output_workbook(
     df_technologies: Optional[pd.DataFrame] = None,
     variable_units: Optional[dict[str, str]] = None,
     years: Iterable | None = None,
+    repayment_schedule: Optional[pd.DataFrame] = None,
+    economy_metrics: Optional[dict[str, pd.Series]] = None,
     scenario: str = "Net Zero",
     sheet_name: str = "0.1 Raw data",
 ) -> Path:
@@ -619,6 +717,8 @@ def export_technology_output_workbook(
         df_technologies=df_technologies,
         variable_units=variable_units,
         years=years,
+        repayment_schedule=repayment_schedule,
+        economy_metrics=economy_metrics,
         scenario=scenario,
     )
 

@@ -49,8 +49,8 @@ def plot_co2_emissions_scenarios(df_emissions: pd.DataFrame):
         x="Year",
         y="Emissions",
         color="Scenario",
-        title="Projected CO₂ Emissions by Scenario",
-        labels={"Emissions": "Mt CO₂", "Year": "Year"},
+        title="Projected CO2 Emissions by Scenario",
+        labels={"Emissions": "Mt CO2", "Year": "Year"},
     )
     fig.update_traces(selector=dict(name="Emissions Savings"), line=dict(dash="dash", color="gray", width=2))
     fig.update_traces(selector=dict(name="Least Cost"), line=dict(color="blue", width=2))
@@ -331,7 +331,7 @@ def plot_technology_cashflow_waterfall(
         )
     )
     fig.update_layout(
-        title=f"Technology Cashflow — {tech_name} ({year})",
+        title=f"Technology Cashflow  -  {tech_name} ({year})",
         template="plotly_white",
         width=width,
         height=height,

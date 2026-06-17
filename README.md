@@ -36,7 +36,7 @@ A comprehensive toolkit for analyzing energy finance data, focusing on renewable
 └── README.md
 ```
 
-Workflow logic is implemented in the `MinFin` package; `minfin_notebook.ipynb` orchestrates parameters, data loading, and plots. Prefer `from MinFin.<module> import ...` rather than duplicating large `def` blocks. Older notebook copies can stay under `legacy/` locally (not tracked).
+Workflow logic is implemented in the `MinFin` package; `minfin_notebook.ipynb` orchestrates parameters, data loading, and plots. Prefer `from MinFin.<module> import ...` rather than duplicating large `def` blocks. An obsolete prototype notebook (`minfin_trans.ipynb`) may be kept under `legacy/` locally (not tracked).
 
 ## Modules Overview
 

@@ -192,3 +192,6 @@ legacy/
 # Local extraction scratch (safe to delete)
 _extract_temp/
 _write_modules.py
+
+# Regenerated notebook outputs (figures and Excel exports)
+minfin_output/

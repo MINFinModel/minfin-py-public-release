@@ -1,37 +1,51 @@
 # MinFin API Documentation
 
-## DataProcessor
+Workflow logic lives in the `MinFin` package. The main entry point is `minfin_notebook.ipynb`. Prefer explicit imports:
 
-The `DataProcessor` class handles all data processing operations for the MinFin toolkit.
+```python
+from MinFin.data_processor import load_excel_data, input_extractor, detect_workbook_format
+from MinFin.financing_baseline import financing_baseline_extractor, financing_baseline_stats
+from MinFin.high_level_dashboard import hd  # alias for high_level_dashboard
+```
 
-### Methods
+See [input_workbook_mapping.md](input_workbook_mapping.md) for legacy vs pure-input workbook layouts.
 
-#### `__init__()`
-Initialize a new DataProcessor instance.
+## Data loading (`data_processor`)
 
-#### `process_data(file_path)`
-Process the input Excel file and prepare it for analysis.
+### `load_excel_data(file_path, workbook_format="auto")`
 
-Parameters:
-- `file_path` (str): Path to the Excel file to process
+Load definition-style tables (`df_technologies`, `df_currencies`, etc.) from legacy `.xlsm` or pure-input `.xlsx` workbooks.
 
-Returns:
-- Processed data in the required format
+### `detect_workbook_format(file_path)`
 
-## HighLevelDashboard
+Returns `"pure_input"` or `"legacy"` based on sheet names.
 
-The `HighLevelDashboard` class generates high-level financial dashboards.
+### `input_extractor(scenario, workbook_format="legacy", file_path=None)`
 
-### Methods
+Extract infrastructure blocks (capital cost, OPEX, etc.) from **New Infrastructure (Input)** or **INVESTMENT PLAN**.
 
-#### `__init__()`
-Initialize a new HighLevelDashboard instance.
+### `read_infrastructure_input` / `read_financing_baseline`
 
-#### `generate_dashboard(data)`
-Generate a dashboard from the processed data.
+Read wide legacy sheets; return `None` for pure-input workbooks.
 
-Parameters:
-- `data`: Processed financial data
+## Financing baseline (`financing_baseline`, `financing_stats`)
 
-Returns:
-- Dashboard visualization 
+### `financing_baseline_extractor`
+
+Historic instrument ingestion, repayment schedules, grant/market elements. Use `financing_baseline_extractor.from_workbook(file_path)` for both layouts.
+
+### `financing_baseline_stats`
+
+Aggregations over historic financing and repayment schedules, including `get_technology_financing_requirement()`.
+
+## Dashboard (`high_level_dashboard`)
+
+### `high_level_dashboard` (alias `hd`)
+
+Scenario dashboard: financing summary, funding availability, net-zero financing needs.
+
+## FX (`fx`)
+
+### `get_exchange_rates(target_currency, currency_series, year_series, rates_by_year=None)`
+
+Convert volumes using year/currency lookup tables.

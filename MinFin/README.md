@@ -31,6 +31,14 @@ cd MinFin
 
 ## Module Structure
 
+### Support modules
+
+- `workbook_format` — legacy vs pure-input detection
+- `excel_io` — year-column detection and long-sheet reads
+- `pure_input_blocks` / `infrastructure_extractor` — INVESTMENT PLAN and wide-sheet extraction (`data_processor` re-exports the public API)
+- `fx` — shared exchange-rate helpers
+- `financing_stats` — `financing_baseline_stats` (re-exported from `financing_baseline`)
+
 ### Main Classes
 
 1. `financing_baseline_extractor`

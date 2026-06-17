@@ -206,7 +206,7 @@ def calc_donor_mirr(grant_amount, annual_cashflows, donor_discount_rate):
     adjusted_cashflows = annual_cashflows.copy()
     adjusted_cashflows.iloc[0] += grant_amount 
     
-    # an alternative is to use numpy_financial.mirr for MIRR（installation required: numpy-financial）
+    # an alternative is to use numpy_financial.mirr for MIRR (requires numpy-financial)
     # !pip install numpy-financial
     donor_mirr = cal_mirr(adjusted_cashflows, finance_rate=donor_discount_rate, reinvest_rate=donor_discount_rate)
        

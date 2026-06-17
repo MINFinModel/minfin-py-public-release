@@ -65,7 +65,7 @@ def cal_invest_needs(
     """Build investment-need tables from OSeMOSYS / FFRM–style inputs.
 
     If *pure_input_file_path* is set, ``emission_savings`` is read from **INVESTMENT PLAN**
-    (``emission_savings_series_from_investment_plan``) instead of ``least_cost_summary - net_zero_summary`` CO₂.
+    (``emission_savings_series_from_investment_plan``) instead of ``least_cost_summary - net_zero_summary`` CO2.
     """
     df_emission_savings = pd.DataFrame(index=net_zero_summary.index)
     if pure_input_file_path:
