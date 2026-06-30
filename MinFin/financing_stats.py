@@ -525,9 +525,11 @@ class financing_baseline_stats:
         summary['Debt Share (%)'] = avg_data.xs('Debt Equity Share', level='Metric')['Debt']
         summary['Equity Share (%)'] = avg_data.xs('Debt Equity Share', level='Metric')['Equity']
         
-        # Add interest rates
-        summary['Debt Interest Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Debt']
-        summary['Equity Return Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Equity']
+        # Add interest rates. The "Average" source reports the debt/equity legs as
+        # fractions but the combined ("Total") leg already in percent, so scale the
+        # debt/equity legs to percent to keep every rate column on the same scale.
+        summary['Debt Interest Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Debt'] * 100
+        summary['Equity Return Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Equity'] * 100
         summary['Combined Interest Rate (%)'] = avg_data.xs('Average interest rate', level='Metric')['Total']
         
         # Add loan terms

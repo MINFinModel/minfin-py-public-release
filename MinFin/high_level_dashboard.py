@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import pandas as pd
+
 from .data_processor import get_funding_envelope, process_funding_baseline
 from .excel_io import year_columns_from_index
 from .utils import cal_equity_needs, cal_loan_needs
@@ -43,6 +45,84 @@ class Scenarios:
             raise ValueError(
                 "When capital_injection is True, please pass in a CapitalInjection instance."
             )
+
+# Funding-availability components, in the order of the Excel High Level Dashboard
+# "Net Zero Funding Availability" block. The Total is the sum of these five rows.
+FUNDING_AVAILABILITY_COMPONENTS = (
+    "Government Budget",
+    "Liabilities Payments",
+    "Cashflows",
+    "Capital Injection",
+    "Carbon Credits",
+)
+
+
+def capital_injection_inflow_by_year(capital_injection, years) -> pd.Series:
+    """Per-year capital-injection inflow (``volume / duration`` during the injection window).
+
+    Mirrors :meth:`high_level_dashboard.get_funding_availability_full`: the injection is spread
+    evenly across the window starting at ``start_year``. Returns zeros when there is no injection.
+    """
+    years = [int(y) for y in years]
+    if not capital_injection:
+        return pd.Series(0.0, index=years)
+    ci = capital_injection
+    window = range(ci.start_year, ci.start_year + ci.duration)
+    return pd.Series(
+        [ci.volume / ci.duration if y in window else 0.0 for y in years],
+        index=years,
+        dtype=float,
+    )
+
+
+def compute_funding_availability(
+    years,
+    *,
+    cashflows=None,
+    liabilities_payments=None,
+    carbon_credits=None,
+    capital_injection=None,
+    government_budget=None,
+) -> pd.DataFrame:
+    """Funding-availability table mirroring the Excel "Net Zero Funding Availability" block.
+
+    ``Total = Government Budget + Liabilities Payments + Cashflows + Capital Injection + Carbon Credits``
+
+    Component arguments are per-year series (indexed by year) or array-likes aligned to ``years``;
+    a missing component contributes zero.
+
+    ``government_budget`` is a **reserved interface**: pure-input workbooks have no legacy
+    *Funding Baseline* sheet, so the budget baseline must be supplied externally. Pass a per-year
+    series to include it; when omitted it contributes 0. ``capital_injection`` may be a
+    ``CapitalInjection`` instance (converted with :func:`capital_injection_inflow_by_year`) or a
+    pre-computed per-year series.
+    """
+    years = [int(y) for y in years]
+
+    def _align(series) -> pd.Series:
+        if series is None:
+            return pd.Series(0.0, index=years)
+        s = pd.Series(series)
+        try:
+            s.index = [int(i) for i in s.index]
+        except (TypeError, ValueError):
+            s = pd.Series(list(s)[: len(years)], index=years[: len(list(s))])
+        return pd.to_numeric(s.reindex(years), errors="coerce").fillna(0.0)
+
+    if isinstance(capital_injection, pd.Series):
+        ci_series = _align(capital_injection)
+    else:
+        ci_series = capital_injection_inflow_by_year(capital_injection, years)
+
+    df = pd.DataFrame(index=list(FUNDING_AVAILABILITY_COMPONENTS), columns=years, dtype=float)
+    df.loc["Government Budget", :] = _align(government_budget)
+    df.loc["Liabilities Payments", :] = _align(liabilities_payments)
+    df.loc["Cashflows", :] = _align(cashflows)
+    df.loc["Capital Injection", :] = ci_series
+    df.loc["Carbon Credits", :] = _align(carbon_credits)
+    df.loc["Total", :] = df.loc[list(FUNDING_AVAILABILITY_COMPONENTS), :].sum(axis=0)
+    return df
+
 
 class high_level_dashboard:
     def __init__(
@@ -174,8 +254,16 @@ class high_level_dashboard:
         financing_summary=None,
         fossil_fuel_savings=None,
         df_grants_with_ffs_carbon=None,
+        liabilities_payments=None,
+        government_budget=None,
     ):
-        """Primary funding availability table (Government Budget, Cashflows, Carbon rows, etc.)."""
+        """Primary funding availability table (Government Budget, Cashflows, Carbon rows, etc.).
+
+        ``liabilities_payments`` fills the Liabilities Payments row (per-year inflow, e.g. the
+        summed technology ``liabilities``). ``government_budget`` is a reserved override: when
+        provided it replaces the Funding-Baseline-derived budget row (useful for pure-input
+        workbooks that lack the legacy Funding Baseline sheet).
+        """
         del fossil_fuel_savings, df_grants_with_ffs_carbon
         if df_funding_envelope is None:
             df_funding_baseline_full = self.funding_baseline_full
@@ -225,6 +313,11 @@ class high_level_dashboard:
                 df_funding_envelope.loc["Annual Average", "Budget"] * (1 + rate) ** i for i in range(len(cols))
             ]
 
+        if government_budget is not None:
+            df_funding_availability_full.loc[rows[0], :] = pd.Series(government_budget).reindex(cols).values
+        df_funding_availability_full.loc[rows[1], :] = (
+            pd.Series(liabilities_payments).reindex(cols).values if liabilities_payments is not None else 0
+        )
         df_funding_availability_full.loc[rows[2], :] = financing_summary.loc["Cashflows", :]
         df_carbon_saving = self.get_co2_savings(self.least_cost_summary, self.net_zero_summary)
         df_funding_availability_full.loc[rows[4], :] = df_carbon_saving.loc["Carbon credit", :]
@@ -495,10 +588,22 @@ class high_level_dashboard:
                 "Net zero",
             ],
         ).T
-    def get_gdp_projection(self,current_gdp=50000,growth_rate=0.05):
-        return pd.DataFrame([current_gdp*(1+growth_rate)**i for i in range(len(self.years))],index=self.years,columns=["GDP"]) 
-    def get_gdp_percentage(self,dashboard_summary):
-        gdp = self.get_gdp_projection(5000,0).loc[:,"GDP"]
+    def get_gdp_projection(self, current_gdp=50000, growth_rate=None):
+        """Project annual GDP from a base-year value, compounding by ``growth_rate``.
+
+        When ``growth_rate`` is None the economic-parameters GDP growth rate is used
+        so the projection extrapolates consistently with the rest of the model.
+        """
+        if growth_rate is None:
+            growth_rate = self.economic_params.gdp_growth_rate
+        return pd.DataFrame(
+            [current_gdp * (1 + growth_rate) ** i for i in range(len(self.years))],
+            index=self.years,
+            columns=["GDP"],
+        )
+
+    def get_gdp_percentage(self, dashboard_summary, base_gdp=5000, growth_rate=None):
+        gdp = self.get_gdp_projection(base_gdp, growth_rate).loc[:, "GDP"]
         cols = self.years
         rows = ['Financing',"Funding"]
         df_gdp_percentage = pd.DataFrame(index=rows,columns=cols)

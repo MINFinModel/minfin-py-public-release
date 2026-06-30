@@ -18,16 +18,9 @@ from MinFin.technology_sheet_io import PURE_INPUT_STATIC_FIELD_SOURCES
 RAW_INPUT_COLUMNS = [
     "Scenario",
     "Variable",
-    "Dim1",
-    "Dim2",
-    "Dim3",
-    "Dim4",
-    "Dim5",
-    "Dim6",
-    "Dim7",
-    "Dim8",
-    "Dim9",
-    "Dim10",
+    "technology",
+    "year",
+    "unit",
     "ResultValue",
 ]
 
@@ -81,9 +74,21 @@ INVESTMENT_BLOCK_VARIABLES = (
 
 ECONOMY_DIM = "Economy"
 
+# Weighted-average financing terms per technology, exported as scalar rows
+# (one value per technology, no year). Maps export variable -> (summary column, unit).
+TECHNOLOGY_FINANCING_SUMMARY_FIELDS: dict[str, tuple[str, str]] = {
+    "weighted_grace_period": ("Grace Period (years)", "years"),
+    "weighted_loan_term": ("Loan Term (years)", "years"),
+    "weighted_interest_rate": ("Combined Interest Rate (%)", "%"),
+    "weighted_rate_of_return_on_equity": ("Equity Return Rate (%)", "%"),
+    "weighted_wacc": ("WACC (%)", "%"),
+}
+
 ECONOMY_METRIC_VARIABLES = (
     "financing_baseline",
     "existing_financing_requirement",
+    "financing_requirement_share_of_gdp",
+    "funding_availability_share_of_gdp",
 )
 
 # Computed outputs inherit units from related workbook variables when possible.
@@ -112,6 +117,12 @@ COMPUTED_VARIABLE_UNIT_SOURCES: dict[str, str] = {
     "existing_financing_requirement": "total_grant_amount",
 }
 
+# Share-of-GDP metrics are unitless ratios; they never inherit a money unit.
+GDP_SHARE_VARIABLES = (
+    "financing_requirement_share_of_gdp",
+    "funding_availability_share_of_gdp",
+)
+
 DEFAULT_VARIABLE_UNITS: dict[str, str] = {
     "investment_need": "Mn USD",
     "total_generation": "GWh/Year",
@@ -134,6 +145,8 @@ DEFAULT_VARIABLE_UNITS: dict[str, str] = {
     "Financing Requirement": "Mn USD",
     "financing_baseline": "Mn USD",
     "existing_financing_requirement": "Mn USD",
+    "financing_requirement_share_of_gdp": "share of GDP",
+    "funding_availability_share_of_gdp": "share of GDP",
 }
 
 
@@ -386,6 +399,38 @@ def _append_economy_metric_records(
     )
 
 
+def _append_technology_financing_summary_records(
+    records: list[dict],
+    *,
+    summary: pd.DataFrame,
+    scenario: str,
+    include_unit_dim: bool,
+) -> None:
+    """Emit weighted-average financing terms (term, grace, rates, RoE, WACC) per technology.
+
+    Each metric is a single weighted average per technology, so ``year`` is left blank.
+    """
+    if summary is None or getattr(summary, "empty", True):
+        return
+
+    for variable, (column, unit) in TECHNOLOGY_FINANCING_SUMMARY_FIELDS.items():
+        if column not in summary.columns:
+            continue
+        for tech_name, value in summary[column].items():
+            if pd.isna(value):
+                value = None
+            records.append(
+                {
+                    "Scenario": scenario,
+                    "Variable": variable,
+                    "technology": tech_name,
+                    "year": None,
+                    "unit": unit if include_unit_dim else None,
+                    "ResultValue": value,
+                }
+            )
+
+
 def _append_records(
     records: list[dict],
     *,
@@ -405,16 +450,9 @@ def _append_records(
             {
                 "Scenario": scenario,
                 "Variable": variable,
-                "Dim1": tech_name,
-                "Dim2": year,
-                "Dim3": unit if include_unit_dim else None,
-                "Dim4": None,
-                "Dim5": None,
-                "Dim6": None,
-                "Dim7": None,
-                "Dim8": None,
-                "Dim9": None,
-                "Dim10": None,
+                "technology": tech_name,
+                "year": year,
+                "unit": unit if include_unit_dim else None,
                 "ResultValue": value,
             }
         )
@@ -429,13 +467,13 @@ def build_technology_parameter_raw_table(
 ) -> pd.DataFrame:
     """Flatten ``all_tech_data`` into a raw-input-style long table.
 
-    Output columns intentionally mirror the OSeMOSYS visualization template's
-    ``0.1 Raw data`` layout:
+    Output columns use human-readable names instead of the OSeMOSYS template's
+    generic ``Dim`` columns:
 
     - ``Variable`` stores the MinFin technology parameter name.
-    - ``Dim1`` stores the technology name.
-    - ``Dim2`` stores the year.
-    - ``Dim3`` stores the unit when ``include_unit_dim`` is enabled.
+    - ``technology`` stores the technology name.
+    - ``year`` stores the year.
+    - ``unit`` stores the unit when ``include_unit_dim`` is enabled.
     """
     records: list[dict] = []
 
@@ -473,7 +511,7 @@ def build_technology_parameter_raw_table(
     if df.empty:
         return df
 
-    return df.sort_values(["Variable", "Dim1", "Dim2"], kind="stable").reset_index(drop=True)
+    return df.sort_values(["Variable", "technology", "year"], kind="stable").reset_index(drop=True)
 
 
 def build_technology_output_raw_table(
@@ -487,6 +525,7 @@ def build_technology_output_raw_table(
     years: Iterable | None = None,
     repayment_schedule: Optional[pd.DataFrame] = None,
     economy_metrics: Optional[dict[str, pd.Series]] = None,
+    technology_financing_summary: Optional[pd.DataFrame] = None,
     scenario: str = "Net Zero",
     include_unit_dim: bool = True,
 ) -> pd.DataFrame:
@@ -632,11 +671,18 @@ def build_technology_output_raw_table(
             include_unit_dim=include_unit_dim,
         )
 
+    _append_technology_financing_summary_records(
+        records,
+        summary=technology_financing_summary,
+        scenario=scenario,
+        include_unit_dim=include_unit_dim,
+    )
+
     df = pd.DataFrame(records, columns=RAW_INPUT_COLUMNS)
     if df.empty:
         return df
 
-    return df.sort_values(["Dim1", "Variable", "Dim2"], kind="stable").reset_index(drop=True)
+    return df.sort_values(["technology", "Variable", "year"], kind="stable").reset_index(drop=True)
 
 
 def _format_workbook(path: Path) -> None:
@@ -702,6 +748,7 @@ def export_technology_output_workbook(
     years: Iterable | None = None,
     repayment_schedule: Optional[pd.DataFrame] = None,
     economy_metrics: Optional[dict[str, pd.Series]] = None,
+    technology_financing_summary: Optional[pd.DataFrame] = None,
     scenario: str = "Net Zero",
     sheet_name: str = "0.1 Raw data",
 ) -> Path:
@@ -719,6 +766,7 @@ def export_technology_output_workbook(
         years=years,
         repayment_schedule=repayment_schedule,
         economy_metrics=economy_metrics,
+        technology_financing_summary=technology_financing_summary,
         scenario=scenario,
     )
 

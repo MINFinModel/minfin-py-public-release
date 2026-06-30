@@ -53,6 +53,59 @@ def year_columns_from_index(index, *, since_year: int | None = None) -> list:
     return years
 
 
+MACROECONOMIC_SHEET = "MACROECONOMIC"
+MACROECONOMIC_HEADER_ROW = 4
+
+
+def read_annual_gdp(file_path: str) -> pd.Series:
+    """Read the ``Annual GDP`` (Mn USD) yearly series from the pure-input MACROECONOMIC sheet.
+
+    Returns a ``pd.Series`` indexed by integer year. Returns an empty series when the
+    sheet or the ``Annual GDP`` row is absent (e.g. legacy workbooks).
+    """
+    try:
+        mac = pd.read_excel(
+            file_path, sheet_name=MACROECONOMIC_SHEET, header=None, engine="openpyxl"
+        )
+    except (ValueError, KeyError, FileNotFoundError):
+        return pd.Series(dtype=float, name="annual_gdp")
+
+    if mac.shape[0] <= MACROECONOMIC_HEADER_ROW:
+        return pd.Series(dtype=float, name="annual_gdp")
+
+    year_cols: dict[int, int] = {}
+    for j in range(mac.shape[1]):
+        value = mac.iloc[MACROECONOMIC_HEADER_ROW, j]
+        try:
+            year = int(float(value))
+        except (TypeError, ValueError):
+            continue
+        if YEAR_COLUMN_MIN < year < YEAR_COLUMN_MAX:
+            year_cols[year] = j
+    if not year_cols:
+        return pd.Series(dtype=float, name="annual_gdp")
+
+    gdp_row = None
+    for i in range(mac.shape[0]):
+        for j in range(min(mac.shape[1], 4)):
+            cell = mac.iloc[i, j]
+            if isinstance(cell, str) and cell.strip().lower() == "annual gdp":
+                gdp_row = i
+                break
+        if gdp_row is not None:
+            break
+    if gdp_row is None:
+        return pd.Series(dtype=float, name="annual_gdp")
+
+    values: dict[int, float] = {}
+    for year, j in year_cols.items():
+        v = pd.to_numeric(mac.iloc[gdp_row, j], errors="coerce")
+        if pd.notna(v):
+            values[year] = float(v)
+
+    return pd.Series(values, name="annual_gdp").sort_index()
+
+
 def read_long_sheet(
     file_path: str,
     sheet_name: str,

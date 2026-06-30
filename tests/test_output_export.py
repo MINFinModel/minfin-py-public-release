@@ -33,10 +33,10 @@ def test_build_technology_parameter_raw_table_flattens_all_tech_data():
     assert list(df.columns) == RAW_INPUT_COLUMNS
     assert len(df) == 4
     assert set(df["Variable"]) == {"total_grant_amount", "receivables"}
-    assert set(df["Dim1"]) == {"Biomass", "Wind"}
-    assert set(df["Dim2"]) == {2025, 2026}
+    assert set(df["technology"]) == {"Biomass", "Wind"}
+    assert set(df["year"]) == {2025, 2026}
     assert set(df["Scenario"]) == {"Net Zero"}
-    assert df.loc[df["Variable"] == "total_grant_amount", "Dim3"].iat[0] == "Million USD"
+    assert df.loc[df["Variable"] == "total_grant_amount", "unit"].iat[0] == "Million USD"
 
 
 def test_build_technology_output_raw_table_includes_computed_and_financing_rows():
@@ -198,8 +198,8 @@ def test_build_technology_output_raw_table_uses_workbook_units():
         years=[2025, 2026],
     )
 
-    assert df.loc[df["Variable"] == "ppa_contracted_generation", "Dim3"].iat[0] == "GWh/Year"
-    assert df.loc[df["Variable"] == "cashflow", "Dim3"].iat[0] == "Mn USD"
+    assert df.loc[df["Variable"] == "ppa_contracted_generation", "unit"].iat[0] == "GWh/Year"
+    assert df.loc[df["Variable"] == "cashflow", "unit"].iat[0] == "Mn USD"
 
 
 def test_compute_financing_baseline_and_existing_requirement_from_repayment_schedule():
@@ -245,7 +245,7 @@ def test_build_technology_output_raw_table_includes_economy_financing_metrics():
         variable_units={"total_grant_amount": "Mn USD"},
     )
 
-    economy_rows = df[df["Dim1"] == ECONOMY_DIM]
+    economy_rows = df[df["technology"] == ECONOMY_DIM]
     assert set(economy_rows["Variable"]) == {
         "financing_baseline",
         "existing_financing_requirement",
@@ -256,7 +256,71 @@ def test_build_technology_output_raw_table_includes_economy_financing_metrics():
     assert economy_rows.loc[
         economy_rows["Variable"] == "existing_financing_requirement", "ResultValue"
     ].tolist() == [4.0, 5.0]
-    assert economy_rows["Dim3"].iat[0] == "Mn USD"
+    assert economy_rows["unit"].iat[0] == "Mn USD"
+
+
+def test_build_technology_output_raw_table_includes_weighted_financing_summary():
+    tech_dataframes = {
+        "Biomass": pd.DataFrame({"cashflow": [1.0, 2.0]}, index=[2025, 2026]),
+    }
+    technology_financing_summary = pd.DataFrame(
+        {
+            "Loan Term (years)": [12.0],
+            "Grace Period (years)": [3.0],
+            "Combined Interest Rate (%)": [6.5],
+            "Equity Return Rate (%)": [11.0],
+            "WACC (%)": [8.2],
+        },
+        index=pd.Index(["Biomass"], name="Technology"),
+    )
+
+    df = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        technology_financing_summary=technology_financing_summary,
+        years=[2025, 2026],
+    )
+
+    summary_rows = df[df["Variable"].str.startswith("weighted_")]
+    assert set(summary_rows["Variable"]) == {
+        "weighted_grace_period",
+        "weighted_loan_term",
+        "weighted_interest_rate",
+        "weighted_rate_of_return_on_equity",
+        "weighted_wacc",
+    }
+    assert (summary_rows["technology"] == "Biomass").all()
+    assert summary_rows["year"].isna().all()
+    assert df.loc[df["Variable"] == "weighted_wacc", "ResultValue"].iat[0] == 8.2
+    assert df.loc[df["Variable"] == "weighted_wacc", "unit"].iat[0] == "%"
+
+
+def test_build_technology_output_raw_table_includes_gdp_share_metrics():
+    tech_dataframes = {
+        "Biomass": pd.DataFrame({"cashflow": [1.0, 2.0]}, index=[2025, 2026]),
+    }
+    economy_metrics = {
+        "financing_requirement_share_of_gdp": pd.Series(
+            [0.01, 0.02], index=[2025, 2026]
+        ),
+        "funding_availability_share_of_gdp": pd.Series(
+            [0.03, 0.04], index=[2025, 2026]
+        ),
+    }
+
+    df = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        economy_metrics=economy_metrics,
+        years=[2025, 2026],
+    )
+
+    economy_rows = df[df["technology"] == ECONOMY_DIM]
+    assert {
+        "financing_requirement_share_of_gdp",
+        "funding_availability_share_of_gdp",
+    } <= set(economy_rows["Variable"])
+    fr = economy_rows[economy_rows["Variable"] == "financing_requirement_share_of_gdp"]
+    assert fr["ResultValue"].tolist() == [0.01, 0.02]
+    assert fr["unit"].iat[0] == "share of GDP"
 
 
 def test_build_technology_output_raw_table_excludes_ffe_investment_block():

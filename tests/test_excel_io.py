@@ -6,6 +6,7 @@ import pandas as pd
 
 from MinFin.excel_io import (
     load_workbook_variable_units,
+    read_annual_gdp,
     year_columns_from_dataframe,
     year_columns_from_index,
 )
@@ -34,3 +35,25 @@ def test_load_workbook_variable_units_reads_input_file():
     assert units["PPA Contracted Generation"] == "GWh/Year"
     assert units["total_grant_amount"] == "Mn USD"
     assert units["Share of Off-take"] == "%"
+
+
+def test_read_annual_gdp_reads_macroeconomic_series():
+    file_path = Path("data/MINFin Python Input File.xlsx")
+    if not file_path.exists():
+        return
+
+    gdp = read_annual_gdp(str(file_path))
+
+    assert not gdp.empty
+    assert 2025 in gdp.index
+    assert gdp.loc[2025] > 0
+    assert gdp.index.is_monotonic_increasing
+
+
+def test_read_annual_gdp_missing_sheet_returns_empty():
+    legacy = Path("data/MINFin Energy Example Input File.xlsm")
+    if not legacy.exists():
+        return
+
+    gdp = read_annual_gdp(str(legacy))
+    assert gdp.empty

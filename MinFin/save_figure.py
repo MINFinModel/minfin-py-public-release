@@ -2,7 +2,14 @@ import os
 import re
 import plotly.graph_objects as go
 
-def save_figure(fig, output_dir="minfin_output/figures", save_html=True, save_png=True, custom_name=None):
+def save_figure(
+    fig,
+    output_dir="minfin_output/figures",
+    save_html=True,
+    save_png=True,
+    custom_name=None,
+    include_plotlyjs="cdn",
+):
     """
     Save a Plotly figure to file(s) with a single function call.
     
@@ -18,6 +25,11 @@ def save_figure(fig, output_dir="minfin_output/figures", save_html=True, save_pn
         Whether to save as static PNG file
     custom_name : str, optional
         Custom filename to use instead of the figure title
+    include_plotlyjs : str, default="cdn"
+        How plotly.js is bundled into the HTML. ``"cdn"`` keeps files small (a few KB
+        plus the chart data) by loading plotly.js from a CDN, which avoids Safari's
+        "Maximum call stack size exceeded" error triggered by the ~3.5 MB inline
+        library. Use ``True`` to inline the library for fully offline files.
         
     Returns:
     --------
@@ -58,7 +70,7 @@ def save_figure(fig, output_dir="minfin_output/figures", save_html=True, save_pn
     if save_html:
         html_path = os.path.join(output_dir, f"{base_name}.html")
         try:
-            fig.write_html(html_path)
+            fig.write_html(html_path, include_plotlyjs=include_plotlyjs)
             saved_files['html'] = html_path
             print(f"Saved HTML: {html_path}")
         except Exception as e:
