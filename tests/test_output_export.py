@@ -204,6 +204,36 @@ def test_build_technology_output_raw_table_uses_workbook_units():
     assert df.loc[df["Variable"] == "cashflow", "unit"].iat[0] == "Mn USD"
 
 
+def test_build_technology_output_raw_table_units_local_source_rows_separately():
+    tech_dataframes = {
+        "Battery": pd.DataFrame(
+            {
+                "local_currency_debt_comm_dom": [11.0],
+                "foreign_currency_debt_comm_intl": [2.0],
+                "cashflow": [5.0],
+            },
+            index=[2032],
+        ),
+    }
+    financing_requirement_by_tech = {
+        "Battery": pd.DataFrame({2032: [0.5]}, index=["Loans (Comm_Dom)"]),
+    }
+
+    df = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        financing_requirement_by_tech=financing_requirement_by_tech,
+        variable_units={"capital_cost": "Mn USD", "total_grant_amount": "Mn USD"},
+        years=[2032],
+        local_currency_code="KES",
+        foreign_currency_code="USD",
+    )
+
+    units = df.set_index("Variable")["unit"].to_dict()
+    assert units["local_currency_debt_comm_dom"] == "Mn KES"
+    assert units["foreign_currency_debt_comm_intl"] == "Mn USD"
+    assert units["Loans (Comm_Dom)"] == "Mn USD"
+
+
 def test_compute_financing_baseline_and_existing_requirement_from_repayment_schedule():
     repayment_schedule = pd.DataFrame(
         {

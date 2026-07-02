@@ -181,6 +181,19 @@ def _is_investment_allocation_variable(variable: str) -> bool:
     return variable.startswith(INVESTMENT_ALLOCATION_PREFIXES)
 
 
+def _investment_allocation_unit(
+    variable: str,
+    *,
+    local_currency_code: str = "KES",
+    foreign_currency_code: str = "USD",
+) -> str:
+    if variable.startswith("local_currency_"):
+        return f"Mn {local_currency_code}"
+    if variable.startswith("foreign_currency_"):
+        return f"Mn {foreign_currency_code}"
+    return ""
+
+
 def _canonical_variable_name(variable: str) -> str:
     return CANONICAL_VARIABLE_ALIASES.get(str(variable).strip(), str(variable).strip())
 
@@ -305,7 +318,16 @@ def _variable_unit(
     all_tech_data: Optional[dict] = None,
     tech_name: Optional[str] = None,
     variable_units: Optional[dict[str, str]] = None,
+    local_currency_code: str = "KES",
+    foreign_currency_code: str = "USD",
 ) -> str:
+    if _is_investment_allocation_variable(variable):
+        return _investment_allocation_unit(
+            variable,
+            local_currency_code=local_currency_code,
+            foreign_currency_code=foreign_currency_code,
+        )
+
     if all_tech_data and tech_name and tech_name in all_tech_data:
         payload = all_tech_data[tech_name].get(variable)
         if isinstance(payload, dict):
@@ -328,11 +350,6 @@ def _variable_unit(
         inherited = _lookup_workbook_unit(source, variable_units)
         if inherited:
             return inherited
-
-    if _is_investment_allocation_variable(variable):
-        allocation_unit = _lookup_workbook_unit("capital_cost", variable_units)
-        if allocation_unit:
-            return allocation_unit
 
     if variable.startswith("Loans (") or variable.startswith("Equity ("):
         money_unit = _lookup_workbook_unit("total_grant_amount", variable_units)
@@ -608,6 +625,8 @@ def build_technology_output_raw_table(
     existing_financing_by_technology: Optional[pd.DataFrame] = None,
     scenario: str = "Net Zero",
     include_unit_dim: bool = True,
+    local_currency_code: str = "KES",
+    foreign_currency_code: str = "USD",
 ) -> pd.DataFrame:
     """Flatten per-technology outputs (inputs + computed) into a long table.
 
@@ -639,6 +658,8 @@ def build_technology_output_raw_table(
                 all_tech_data=all_tech_data,
                 tech_name=tech_name,
                 variable_units=variable_units,
+                local_currency_code=local_currency_code,
+                foreign_currency_code=foreign_currency_code,
             )
             _append_records(
                 records,
@@ -725,6 +746,8 @@ def build_technology_output_raw_table(
                     all_tech_data=all_tech_data,
                     tech_name=tech_name,
                     variable_units=variable_units,
+                    local_currency_code=local_currency_code,
+                    foreign_currency_code=foreign_currency_code,
                 ),
                 include_unit_dim=include_unit_dim,
             )
@@ -855,6 +878,8 @@ def export_technology_output_workbook(
     existing_financing_by_technology: Optional[pd.DataFrame] = None,
     scenario: str = "Net Zero",
     sheet_name: str = "0.1 Raw data",
+    local_currency_code: str = "KES",
+    foreign_currency_code: str = "USD",
 ) -> Path:
     """Write the full per-technology output table (inputs + computed variables)."""
     output_path = Path(output_path)
@@ -873,6 +898,8 @@ def export_technology_output_workbook(
         technology_financing_summary=technology_financing_summary,
         existing_financing_by_technology=existing_financing_by_technology,
         scenario=scenario,
+        local_currency_code=local_currency_code,
+        foreign_currency_code=foreign_currency_code,
     )
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
