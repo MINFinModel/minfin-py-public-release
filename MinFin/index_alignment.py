@@ -114,7 +114,7 @@ def apply_investment_to_tech_dataframes(
     tech_dataframes: dict[str, pd.DataFrame],
     df_category_sum: pd.DataFrame,
     *,
-    grant_share: float = 0.05,
+    grant_share: float = 0.0,
 ) -> None:
     """Populate grant and investment-need columns using year-aligned category sums."""
     category = ensure_year_index(df_category_sum)

@@ -136,6 +136,41 @@ def new_infrastructure_technology_list(file_path: str) -> list[str]:
     return techs
 
 
+def load_technology_alias_map(file_path: str) -> dict[str, str]:
+    """Map TECHNOLOGY REGISTER aliases (code / description / parent) to the parent technology.
+
+    The pure-input **TECHNOLOGY REGISTER** (header row 4) "Investment Plan Technologies" block
+    lists one row per OSeMOSYS code: ``Name`` (code, e.g. ``PWRWND``), ``Description``
+    (e.g. ``Onshore Wind``) and ``Technology`` (the parent model name, e.g. ``Wind``). The
+    historic **EXISTING INFRASTRUCTURE** sheet labels rows by the *description*, while the rest
+    of the model uses the *parent* name, so this map bridges the two (description/code -> parent)
+    and keeps parent -> parent as an identity. Returns an empty dict for legacy workbooks that
+    have no register sheet.
+    """
+    try:
+        tr = pd.read_excel(
+            file_path, sheet_name="TECHNOLOGY REGISTER", header=4, engine="openpyxl"
+        )
+    except Exception:
+        return {}
+    tr.columns = [str(c).strip() for c in tr.columns]
+    if "Technology" not in tr.columns:
+        return {}
+
+    alias_map: dict[str, str] = {}
+    for _, row in tr.iterrows():
+        parent = str(row.get("Technology", "")).strip()
+        if not parent or parent.lower() == "nan":
+            continue
+        # Parent identity always wins over any alias collision.
+        alias_map[parent] = parent
+        for col in ("Name", "Description"):
+            val = str(row.get(col, "")).strip()
+            if val and val.lower() != "nan":
+                alias_map.setdefault(val, parent)
+    return alias_map
+
+
 def technology_disag_s1_from_new_infrastructure(file_path: str) -> pd.DataFrame:
     """
     Build a ``Technology Disag (S1)``-shaped frame from **NEW INFRASTRUCTURE** in the pure-input workbook.
@@ -263,6 +298,31 @@ def extract_tech_data_pure_input(
 
         unit = unit_from_workbook_row(row, fallback_unit)
         tech_data[field_name] = {"values": values, "unit": unit}
+
+    # Pure-input workbooks omit a PPA currency time series; infer from tariff units.
+    if "ppa_currency" in tech_data:
+        inferred = None
+        for key in (
+            "ppa_standard_tariff",
+            "ppa_direct_offtaker_tariff",
+            "ppa_penalty_tariff",
+            "ppa_capacity_fee",
+            "redispatch_compensation_price",
+        ):
+            payload = tech_data.get(key)
+            if isinstance(payload, dict):
+                unit = str(payload.get("unit", "")).upper()
+                for code in ("KES", "USD", "EUR", "GBP", "JPY", "CNY"):
+                    if code in unit:
+                        inferred = code
+                        break
+            if inferred:
+                break
+        tech_data["ppa_currency"] = {
+            "values": z.copy(),
+            "unit": inferred or "USD",
+        }
+
     return tech_data
 
 

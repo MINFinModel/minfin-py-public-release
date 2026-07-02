@@ -92,7 +92,7 @@ def _get_export_techs(tech_dataframes: dict, df_technologies: pd.DataFrame) -> l
         t for t in tech_dataframes
         if _classify_segment(_get_tech_class(t, df_technologies)) == 4
     ]
-    
+
 def _compute_export_gen(
     export_techs: list,
     df_generation_tech_sums: pd.DataFrame,
@@ -169,7 +169,7 @@ def _average_tariff(tech_name, tech_df, year, upstream_techs, upstream_category,
         return 0.0
 
     num_total = 0.0
-    
+
     # 1) Wholesale leg: if offtaker tariff columns exist, use buyer share × tariff × FX
     offtaker_pairs = _get_offtaker_tariff_columns(tech_name, upstream_category, organized_offtaker, tech_dataframes)
     if offtaker_pairs:
@@ -377,6 +377,129 @@ def compute_capacity_purchased_series(
         cap_list.append(c)
         fee_list.append(f)
     return pd.Series(cap_list, index=years), pd.Series(fee_list, index=years)
+
+
+def _exchange_rate_series(
+    exchange_rates: pd.DataFrame | None,
+    currency: str,
+    index: pd.Index,
+) -> pd.Series:
+    """Local currency per 1 USD, aligned to *index* (same convention as ``calc_sale_price``)."""
+    if exchange_rates is None or currency in ("USD", "") or currency not in exchange_rates.columns:
+        return pd.Series(1.0, index=index)
+    return pd.to_numeric(exchange_rates[currency], errors="coerce").reindex(index).fillna(1.0)
+
+
+def _currency_from_unit(unit: str | None) -> str | None:
+    """Extract a currency code embedded in a tariff/fee unit string (e.g. ``KES/kWh``)."""
+    if not unit:
+        return None
+    upper = str(unit).upper()
+    for code in ("KES", "USD", "EUR", "GBP", "JPY", "CNY"):
+        if code in upper:
+            return code
+    return None
+
+
+def _ppa_currency_for_frame(
+    tech_df: pd.DataFrame,
+    default: str = "USD",
+    *,
+    unit_hints: dict | None = None,
+) -> str:
+    if "ppa_currency" in tech_df.columns:
+        values = tech_df["ppa_currency"].dropna()
+        if not values.empty:
+            code = str(values.iloc[0]).strip()
+            if code and code not in ("0", "0.0", "nan", "None"):
+                # Legacy workbooks may store a numeric currency code; treat as missing.
+                if not code.replace(".", "", 1).isdigit():
+                    return code
+
+    for key in (
+        "ppa_standard_tariff",
+        "ppa_direct_offtaker_tariff",
+        "ppa_penalty_tariff",
+        "ppa_capacity_fee",
+        "redispatch_compensation_price",
+    ):
+        if unit_hints and key in unit_hints:
+            inferred = _currency_from_unit(unit_hints.get(key))
+            if inferred:
+                return inferred
+    return default
+
+
+def local_energy_revenue_mn_usd(
+    generation_gwh: pd.Series,
+    price_per_kwh: pd.Series,
+    exchange_rates: pd.DataFrame | None,
+    currency: str,
+) -> pd.Series:
+    """``generation (GWh) × price (local/kWh) / FX (local per USD)`` → Mn USD."""
+    fx = _exchange_rate_series(exchange_rates, currency, generation_gwh.index)
+    return generation_gwh * price_per_kwh / fx
+
+
+def compute_redispatch_compensation_mn_usd(
+    tech_df: pd.DataFrame,
+    potential_minus_actual: pd.Series,
+    exchange_rates: pd.DataFrame | None = None,
+    *,
+    unit_hints: dict | None = None,
+) -> pd.Series:
+    """Redispatch compensation in Mn USD with PPA-currency FX."""
+    currency = _ppa_currency_for_frame(tech_df, unit_hints=unit_hints)
+    return local_energy_revenue_mn_usd(
+        potential_minus_actual,
+        tech_df["redispatch_compensation_price"],
+        exchange_rates,
+        currency,
+    )
+
+
+def compute_total_ppa_revenue(
+    tech_df: pd.DataFrame,
+    exchange_rates: pd.DataFrame | None = None,
+    *,
+    unit_hints: dict | None = None,
+) -> pd.Series:
+    """Excel-aligned total PPA revenue (Mn USD), including FX on all tariff legs."""
+    currency = _ppa_currency_for_frame(tech_df, unit_hints=unit_hints)
+
+    def _leg(generation, share, tariff):
+        return local_energy_revenue_mn_usd(
+            generation * share,
+            tariff,
+            exchange_rates,
+            currency,
+        )
+
+    standard = _leg(
+        tech_df["ppa_met_generation"],
+        tech_df["ppa_standard_offtaker_share"],
+        tech_df["ppa_standard_tariff"],
+    )
+    direct = _leg(
+        tech_df["ppa_met_generation"],
+        tech_df["ppa_direct_offtaker_share"],
+        tech_df["ppa_direct_offtaker_tariff"],
+    )
+
+    excess_generation = tech_df["total_generation"] - tech_df["ppa_contracted_generation"]
+    penalty = local_energy_revenue_mn_usd(
+        np.minimum(excess_generation, 0),
+        tech_df["ppa_penalty_tariff"],
+        exchange_rates,
+        currency,
+    )
+    capacity_fee = local_energy_revenue_mn_usd(
+        tech_df["ppa_contracted_capacity"],
+        tech_df["ppa_capacity_fee"],
+        exchange_rates,
+        currency,
+    )
+    return standard + direct + penalty + capacity_fee
 
 
 def calc_sale_price(df: pd.DataFrame, er: pd.DataFrame) -> pd.Series:

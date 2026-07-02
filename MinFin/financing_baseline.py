@@ -299,7 +299,9 @@ class financing_baseline_extractor:
         - ``convert_currency=False`` (default): use ``Volume of Finance`` as-is, i.e. the
           commitment currency. Inputs are USD by default, so this keeps USD amounts.
         - ``convert_currency=True``: multiply each year's payment by the Excel FX ratio
-          ``rate(dashboard_currency, year) / rate(commitment_currency, year)``;
+          ``rate(local_currency, start_year) / rate(commitment_currency, start_year)``
+          and, for foreign-currency dashboards, ``rate(foreign_currency, payment_year)
+          / rate(local_currency, payment_year)``;
           ``dashboard_currency`` defaults to ``self.foreign_currency`` ("USD").
         """
         if dashboard_currency is None:
@@ -330,6 +332,7 @@ class financing_baseline_extractor:
                             year,
                             dashboard_currency,
                             rates_by_year,
+                            start_year=df.loc[project_id, "Year"],
                         )
                     df_repayment.loc[df_repayment['Project ID'] == project_id, year] = self.cal_repayment_value(
                         df.loc[project_id, "Rate"],
@@ -352,17 +355,42 @@ class financing_baseline_extractor:
         df_repayment['Average Annual Payment']= df_repayment['Sum of Repayment'] /df['Term'].astype(float)#.replace(0,100000)
         df_repayment['Average Annual Payment'] = df_repayment['Average Annual Payment'].replace([np.inf, -np.inf], np.nan).fillna(0)
         return df_repayment.reset_index(drop=True)
-    def _repayment_fx_factor(self, commitment_currency, year, dashboard_currency, rates_by_year=None):
-        """Excel per-year FX ratio rate(dashboard)/rate(commitment); 1.0 if rates unavailable."""
+    def _repayment_fx_factor(
+        self,
+        commitment_currency,
+        year,
+        dashboard_currency,
+        rates_by_year=None,
+        *,
+        start_year=None,
+    ):
+        """
+        Excel repayment FX ratio:
+        local(start_year) / commitment(start_year), then foreign(year) / local(year)
+        when the dashboard is in foreign currency.
+        """
         rd = rates_by_year if rates_by_year is not None else (self._macro_rates_dict or exchange_rates_by_year)
+        start_year = year if start_year is None else start_year
+        start_rates = rd.get(int(start_year)) if rd else None
         year_rates = rd.get(int(year)) if rd else None
-        if not year_rates:
+        if not start_rates:
             return 1.0
-        dash = year_rates.get(str(dashboard_currency))
-        comm = year_rates.get(str(commitment_currency))
-        if not dash or not comm:
+        local_currency = getattr(self, "currency", "KES")
+        foreign_currency = getattr(self, "foreign_currency", "USD")
+        local_start = start_rates.get(str(local_currency))
+        comm_start = start_rates.get(str(commitment_currency))
+        if not local_start or not comm_start:
             return 1.0
-        return dash / comm
+        factor = local_start / comm_start
+        if str(dashboard_currency) == str(foreign_currency):
+            if not year_rates:
+                return 1.0
+            foreign_year = year_rates.get(str(foreign_currency))
+            local_year = year_rates.get(str(local_currency))
+            if not foreign_year or not local_year:
+                return 1.0
+            factor *= foreign_year / local_year
+        return factor
 
     def cal_repayment_value(self, interest_rate, volume, scenario, year, repay_years,
                             term=0, grace_period=0, fx_factor=1.0):

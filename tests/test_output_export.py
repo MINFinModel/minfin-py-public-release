@@ -1,12 +1,14 @@
 """Tests for raw technology parameter export helpers."""
 
 import pandas as pd
+import pytest
 
 from MinFin.output_export import (
     ECONOMY_DIM,
     RAW_INPUT_COLUMNS,
     build_technology_output_raw_table,
     build_technology_parameter_raw_table,
+    compute_existing_financing_requirement_by_technology,
     compute_existing_financing_requirement_by_year,
     compute_financing_baseline_by_year,
 )
@@ -246,17 +248,97 @@ def test_build_technology_output_raw_table_includes_economy_financing_metrics():
     )
 
     economy_rows = df[df["technology"] == ECONOMY_DIM]
-    assert set(economy_rows["Variable"]) == {
-        "financing_baseline",
-        "existing_financing_requirement",
-    }
+    # Existing financing requirement is now reported per technology, not at the economy level.
+    assert set(economy_rows["Variable"]) == {"financing_baseline"}
     assert economy_rows.loc[
         economy_rows["Variable"] == "financing_baseline", "ResultValue"
     ].tolist() == [1.0, 4.0, 5.0]
-    assert economy_rows.loc[
-        economy_rows["Variable"] == "existing_financing_requirement", "ResultValue"
-    ].tolist() == [4.0, 5.0]
     assert economy_rows["unit"].iat[0] == "Mn USD"
+
+
+def test_compute_existing_financing_requirement_by_technology_disaggregates_totals():
+    repayment_schedule = pd.DataFrame(
+        {
+            2024: [1.0, 2.0, 4.0],
+            2025: [10.0, 20.0, 40.0],
+            2026: [100.0, 200.0, 400.0],
+            "Volume in USD": [5.0, 6.0, 7.0],
+        }
+    )
+    technology = pd.Series(["Solar", "Solar", "Wind"])
+
+    by_tech = compute_existing_financing_requirement_by_technology(
+        repayment_schedule, technology, years=[2025, 2026]
+    )
+
+    assert list(by_tech.columns) == [2025, 2026]
+    assert 2024 not in by_tech.columns
+    assert by_tech.loc["Solar", 2025] == 30.0
+    assert by_tech.loc["Wind", 2025] == 40.0
+    assert by_tech.loc["Solar", 2026] == 300.0
+
+    economy = compute_existing_financing_requirement_by_year(
+        repayment_schedule, years=[2025, 2026]
+    )
+    assert by_tech.sum(axis=0).loc[2025] == economy.loc[2025]
+    assert by_tech.sum(axis=0).loc[2026] == economy.loc[2026]
+
+
+def test_compute_existing_financing_requirement_by_technology_applies_alias_map():
+    repayment_schedule = pd.DataFrame(
+        {
+            2025: [10.0, 20.0, 40.0],
+            2026: [100.0, 200.0, 400.0],
+            "Volume in USD": [5.0, 6.0, 7.0],
+        }
+    )
+    # Historic labels use register descriptions; map them to the parent model names.
+    technology = pd.Series(["Onshore Wind", "Onshore Wind", "Solar PV"])
+    alias_map = {"Onshore Wind": "Wind", "Solar PV": "Solar PV"}
+
+    by_tech = compute_existing_financing_requirement_by_technology(
+        repayment_schedule, technology, years=[2025, 2026], technology_map=alias_map
+    )
+
+    assert set(by_tech.index) == {"Wind", "Solar PV"}
+    assert "Onshore Wind" not in by_tech.index
+    assert by_tech.loc["Wind", 2025] == 30.0
+    assert by_tech.loc["Solar PV", 2026] == 400.0
+
+
+def test_build_technology_output_raw_table_existing_financing_per_technology():
+    tech_dataframes = {
+        "Solar": pd.DataFrame({"cashflow": [1.0, 2.0]}, index=[2025, 2026]),
+    }
+    repayment_schedule = pd.DataFrame(
+        {
+            2024: [1.0, 4.0],
+            2025: [10.0, 40.0],
+            2026: [100.0, 400.0],
+            "Volume in USD": [5.0, 7.0],
+        }
+    )
+    existing_by_tech = compute_existing_financing_requirement_by_technology(
+        repayment_schedule, pd.Series(["Solar", "Wind"]), years=[2025, 2026]
+    )
+
+    df = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        repayment_schedule=repayment_schedule,
+        existing_financing_by_technology=existing_by_tech,
+        years=[2025, 2026],
+    )
+
+    existing_rows = df[df["Variable"] == "existing_financing_requirement"]
+    # Split per technology, never emitted at the economy level.
+    assert set(existing_rows["technology"]) == {"Solar", "Wind"}
+    assert ECONOMY_DIM not in set(existing_rows["technology"])
+    assert existing_rows.loc[
+        existing_rows["technology"] == "Wind", "ResultValue"
+    ].tolist() == [40.0, 400.0]
+    # financing_baseline stays an economy-level series.
+    baseline_rows = df[df["Variable"] == "financing_baseline"]
+    assert set(baseline_rows["technology"]) == {ECONOMY_DIM}
 
 
 def test_build_technology_output_raw_table_includes_weighted_financing_summary():
@@ -321,6 +403,32 @@ def test_build_technology_output_raw_table_includes_gdp_share_metrics():
     fr = economy_rows[economy_rows["Variable"] == "financing_requirement_share_of_gdp"]
     assert fr["ResultValue"].tolist() == [0.01, 0.02]
     assert fr["unit"].iat[0] == "share of GDP"
+
+
+def test_technology_financing_summary_from_weighted_averages():
+    from MinFin.output_export import technology_financing_summary_from_weighted_averages
+
+    weighted_averages = pd.DataFrame(
+        {
+            ("Debt", "Interest Rate"): [0.06],
+            ("Debt", "Grace Period"): [3.0],
+            ("Debt", "Loan Term"): [12.0],
+            ("Equity", "Rate of Return"): [0.11],
+            ("Financing Shares", "Debt Share"): [0.7],
+            ("Financing Shares", "Equity Share"): [0.3],
+            ("Weighted Cost of Capital", "WACC"): [0.075],
+        },
+        index=pd.Index(["Solar PV"], name="Technology"),
+    )
+
+    summary = technology_financing_summary_from_weighted_averages(weighted_averages)
+    assert summary.loc["Solar PV", "Grace Period (years)"] == 3.0
+    assert summary.loc["Solar PV", "Loan Term (years)"] == 12.0
+    assert summary.loc["Solar PV", "Equity Return Rate (%)"] == pytest.approx(11.0)
+    assert summary.loc["Solar PV", "Combined Interest Rate (%)"] == pytest.approx(
+        (0.06 * 0.7 + 0.11 * 0.3) * 100
+    )
+    assert summary.loc["Solar PV", "WACC (%)"] == pytest.approx(7.5)
 
 
 def test_build_technology_output_raw_table_excludes_ffe_investment_block():

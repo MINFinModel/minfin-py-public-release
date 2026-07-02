@@ -376,6 +376,47 @@ def compute_existing_financing_requirement_by_year(
     return totals.sort_index().rename("existing_financing_requirement")
 
 
+def compute_existing_financing_requirement_by_technology(
+    repayment_schedule: pd.DataFrame,
+    technology: pd.Series | Iterable | None,
+    years: Iterable | None = None,
+    technology_map: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """Annual existing-debt service split by technology.
+
+    The historic financing-baseline portfolio (``repayment_schedule``) carries no
+    ``Technology`` column, so the caller passes the aligned ``historical['Technology']``
+    labels. ``technology_map`` (e.g. from ``load_technology_alias_map``) optionally renames
+    each label to the parent model technology so existing financing lines up with the rest of
+    the outputs. Returns a DataFrame indexed by technology with one column per projection year.
+    """
+    if repayment_schedule is None or repayment_schedule.empty or technology is None:
+        return pd.DataFrame()
+
+    year_cols = _repayment_schedule_year_columns(repayment_schedule)
+    if years is not None:
+        year_set = {int(y) for y in years}
+        year_cols = [y for y in year_cols if y in year_set]
+    if not year_cols:
+        return pd.DataFrame()
+
+    tech = pd.Series(technology)
+    if not tech.index.equals(repayment_schedule.index):
+        if len(tech) == len(repayment_schedule):
+            tech = pd.Series(tech.to_numpy(), index=repayment_schedule.index)
+        else:
+            tech = tech.reindex(repayment_schedule.index)
+
+    if technology_map:
+        tech = tech.map(lambda v: technology_map.get(str(v).strip(), v))
+
+    grouped = repayment_schedule[year_cols].groupby(tech).sum()
+    grouped.columns = [int(c) for c in grouped.columns]
+    grouped = grouped.sort_index(axis=1)
+    grouped.index.name = "Technology"
+    return grouped
+
+
 def _append_economy_metric_records(
     records: list[dict],
     *,
@@ -397,6 +438,44 @@ def _append_economy_metric_records(
         unit=unit,
         include_unit_dim=include_unit_dim,
     )
+
+
+def technology_financing_summary_from_weighted_averages(
+    weighted_averages: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build export summary from NEW INFRASTRUCTURE ``weighted_averages`` (Technology Disag top table).
+
+    ``weighted_averages`` uses fractional rates (0.07 = 7%); export columns use percent (7.0).
+    """
+    if weighted_averages is None or getattr(weighted_averages, "empty", True):
+        return pd.DataFrame()
+
+    wa = weighted_averages
+
+    def _col(category: str, parameter: str) -> pd.Series:
+        key = (category, parameter)
+        if key in wa.columns:
+            return wa[key]
+        return pd.Series(0.0, index=wa.index)
+
+    debt_ir = _col("Debt", "Interest Rate")
+    equity_ror = _col("Equity", "Rate of Return")
+    debt_share = _col("Financing Shares", "Debt Share")
+    equity_share = _col("Financing Shares", "Equity Share")
+
+    summary = pd.DataFrame(index=wa.index)
+    summary.index.name = "Technology"
+    summary["Grace Period (years)"] = _col("Debt", "Grace Period")
+    summary["Loan Term (years)"] = _col("Debt", "Loan Term")
+    summary["Equity Return Rate (%)"] = equity_ror * 100
+    summary["Combined Interest Rate (%)"] = (
+        debt_ir * debt_share + equity_ror * equity_share
+    ) * 100
+    if ("Weighted Cost of Capital", "WACC") in wa.columns:
+        summary["WACC (%)"] = wa[("Weighted Cost of Capital", "WACC")] * 100
+    else:
+        summary["WACC (%)"] = summary["Combined Interest Rate (%)"]
+    return summary
 
 
 def _append_technology_financing_summary_records(
@@ -526,6 +605,7 @@ def build_technology_output_raw_table(
     repayment_schedule: Optional[pd.DataFrame] = None,
     economy_metrics: Optional[dict[str, pd.Series]] = None,
     technology_financing_summary: Optional[pd.DataFrame] = None,
+    existing_financing_by_technology: Optional[pd.DataFrame] = None,
     scenario: str = "Net Zero",
     include_unit_dim: bool = True,
 ) -> pd.DataFrame:
@@ -630,13 +710,15 @@ def build_technology_output_raw_table(
         if not isinstance(repayment_df, pd.DataFrame) or repayment_df.empty:
             continue
         for variable in repayment_df.index:
-            values = repayment_df.loc[variable].tolist()
+            row = repayment_df.loc[variable]
+            row_years = [int(y) for y in row.index]
+            values = row.tolist()
             _append_records(
                 records,
                 variable=str(variable),
                 tech_name=tech_name,
                 values=values,
-                years=years if years is not None else repayment_df.columns.tolist(),
+                years=row_years,
                 scenario=scenario,
                 unit=_variable_unit(
                     str(variable),
@@ -647,16 +729,21 @@ def build_technology_output_raw_table(
                 include_unit_dim=include_unit_dim,
             )
 
+    has_existing_by_tech = (
+        existing_financing_by_technology is not None
+        and not existing_financing_by_technology.empty
+    )
+
     economy_series = dict(economy_metrics or {})
     if repayment_schedule is not None and not repayment_schedule.empty:
         economy_series.setdefault(
             "financing_baseline",
             compute_financing_baseline_by_year(repayment_schedule),
         )
-        economy_series.setdefault(
-            "existing_financing_requirement",
-            compute_existing_financing_requirement_by_year(repayment_schedule, years=years),
-        )
+        # Existing financing requirement is reported per technology (see the notebook's
+        # ``financing_requirement_by_tech`` "Existing Financing Requirement" rows and the
+        # ``existing_financing_by_technology`` argument), so it is no longer emitted at the
+        # economy level here.
 
     for variable in ECONOMY_METRIC_VARIABLES:
         series = economy_series.get(variable)
@@ -670,6 +757,22 @@ def build_technology_output_raw_table(
             unit=_variable_unit(variable, variable_units=variable_units),
             include_unit_dim=include_unit_dim,
         )
+
+    if has_existing_by_tech:
+        _existing_unit = _variable_unit(
+            "existing_financing_requirement", variable_units=variable_units
+        )
+        for tech_name, tech_row in existing_financing_by_technology.iterrows():
+            _append_records(
+                records,
+                variable="existing_financing_requirement",
+                tech_name=str(tech_name),
+                values=tech_row.tolist(),
+                years=existing_financing_by_technology.columns.tolist(),
+                scenario=scenario,
+                unit=_existing_unit,
+                include_unit_dim=include_unit_dim,
+            )
 
     _append_technology_financing_summary_records(
         records,
@@ -749,6 +852,7 @@ def export_technology_output_workbook(
     repayment_schedule: Optional[pd.DataFrame] = None,
     economy_metrics: Optional[dict[str, pd.Series]] = None,
     technology_financing_summary: Optional[pd.DataFrame] = None,
+    existing_financing_by_technology: Optional[pd.DataFrame] = None,
     scenario: str = "Net Zero",
     sheet_name: str = "0.1 Raw data",
 ) -> Path:
@@ -767,6 +871,7 @@ def export_technology_output_workbook(
         repayment_schedule=repayment_schedule,
         economy_metrics=economy_metrics,
         technology_financing_summary=technology_financing_summary,
+        existing_financing_by_technology=existing_financing_by_technology,
         scenario=scenario,
     )
 

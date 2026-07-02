@@ -58,3 +58,18 @@ def test_fx_factor_applied():
     assert abs(factor - (1.0 / 100.0)) < 1e-12
     # Unknown currency -> no conversion
     assert inst._repayment_fx_factor("XYZ", F, "USD", rates) == 1.0
+
+
+def test_fx_factor_uses_excel_two_step_conversion():
+    rates = {
+        2020: {"USD": 1.0, "KES": 100.0, "EUR": 1.25},
+        2025: {"USD": 1.0, "KES": 150.0, "EUR": 1.10},
+    }
+    inst = FB.__new__(FB)  # bypass workbook-dependent __init__
+    inst.currency = "KES"
+    inst.foreign_currency = "USD"
+    inst._macro_rates_dict = rates
+
+    factor = inst._repayment_fx_factor("EUR", 2025, "USD", rates, start_year=2020)
+
+    assert abs(factor - ((100.0 / 1.25) * (1.0 / 150.0))) < 1e-12
