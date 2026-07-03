@@ -8,6 +8,7 @@ from MinFin.data_processor import (
     WORKBOOK_FORMAT_PURE_INPUT,
     detect_workbook_format,
     input_extractor,
+    load_excel_data,
 )
 from MinFin.workbook_format import normalize_workbook_format
 
@@ -40,3 +41,27 @@ def test_detect_workbook_format_legacy_example():
     except OSError:
         return  # example file not present in CI
     assert fmt == WORKBOOK_FORMAT_LEGACY
+
+
+def test_pure_input_consumer_segments_from_wholesale_revenue():
+    path = "data/MINFin Input File - Apr26.xlsx"
+    try:
+        result = load_excel_data(path, workbook_format=WORKBOOK_FORMAT_PURE_INPUT)
+    except OSError:
+        return  # workbook not present in CI
+
+    consumer_segments = result["consumer_segments"].copy()
+    consumer_segments.replace(["", " ", None], pd.NA, inplace=True)
+    target_categories = ["Generation", "Transmission", "Distribution", "Exports"]
+    is_header = consumer_segments["Name"].isin(target_categories) & consumer_segments["Type"].isna()
+    consumer_segments["Category"] = consumer_segments["Name"].where(is_header).ffill()
+    organized_offtaker = consumer_segments.loc[
+        ~is_header & consumer_segments["Name"].notna(), ["Category", "Name", "Currency"]
+    ].reset_index(drop=True)
+
+    assert set(consumer_segments.loc[is_header, "Name"]) == set(target_categories)
+    assert organized_offtaker.to_dict("records") == [
+        {"Category": "Distribution", "Name": "Commercial", "Currency": "KES"},
+        {"Category": "Distribution", "Name": "Industrial", "Currency": "KES"},
+        {"Category": "Distribution", "Name": "Residential", "Currency": "KES"},
+    ]

@@ -12,6 +12,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from MinFin.excel_io import read_long_sheet, year_columns_from_dataframe
 from MinFin.infrastructure_extractor import input_extractor
 from MinFin.pure_input_blocks import (
     build_input_blocks_from_pure_input_file,
@@ -28,6 +29,9 @@ from MinFin.workbook_format import (
 )
 
 _normalize_workbook_format = normalize_workbook_format
+
+
+CONSUMER_SEGMENT_CATEGORIES = ("Generation", "Transmission", "Distribution", "Exports")
 
 
 def get_melted_currency_df():
@@ -99,6 +103,118 @@ def read_financing_baseline(
     return pd.read_excel(file_path, sheet_name="Financing Baseline", engine="openpyxl")
 
 
+def _clean_definition_text(value) -> str:
+    if pd.isna(value):
+        return ""
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
+        return str(int(value))
+    text = str(value).strip()
+    return "" if text.lower() in {"nan", "none"} else text
+
+
+def _category_from_classification(classification) -> str:
+    text = _clean_definition_text(classification).lower()
+    if "generation" in text and "export" not in text:
+        return "Generation"
+    if "transmission" in text:
+        return "Transmission"
+    if "distribution" in text:
+        return "Distribution"
+    if "export" in text:
+        return "Exports"
+    return ""
+
+
+def _series_has_values(row: pd.Series, year_cols: list) -> bool:
+    if not year_cols:
+        return False
+    values = pd.to_numeric(row.reindex(year_cols), errors="coerce").fillna(0.0)
+    return bool((values != 0).any())
+
+
+def _read_consumer_segments_from_wholesale_revenue(
+    file_path: str,
+    df_technologies_classification: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Reconstruct the legacy ``Definitions`` consumer-segments block from pure-input
+    ``WHOLESALE REVENUE`` rows.
+
+    In the pure-input workbook, offtaker/segment metadata lives on long-table
+    ``Share of Off-take`` and ``Wholesale Price`` rows. Only rows with a non-zero
+    share or price series are material to the downstream wholesale calculations;
+    blank placeholder slots are intentionally ignored so they do not replace the
+    no-share fallback with a 0% offtaker split.
+    """
+    columns = ["Name", "Currency", "Type", "Offtaker"]
+    try:
+        wholesale = read_long_sheet(file_path, "WHOLESALE REVENUE")
+    except (ValueError, KeyError, FileNotFoundError):
+        return pd.DataFrame(columns=columns)
+
+    required = {"Variable", "Technology", "Currency", "Name", "Off-taker"}
+    if not required.issubset(set(wholesale.columns)):
+        return pd.DataFrame(columns=columns)
+
+    year_cols = year_columns_from_dataframe(wholesale)
+    valid_vars = {"Share of Off-take", "Wholesale Price"}
+    rows = wholesale[wholesale["Variable"].isin(valid_vars)].copy()
+    rows = rows[rows["Technology"].notna() & rows["Currency"].notna()]
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows["_has_values"] = rows.apply(lambda r: _series_has_values(r, year_cols), axis=1)
+    material_keys = rows.loc[
+        rows["_has_values"], ["Technology", "Currency", "Name", "Off-taker"]
+    ].drop_duplicates()
+    if material_keys.empty:
+        return pd.DataFrame(columns=columns)
+
+    classification = (
+        df_technologies_classification.dropna(subset=["Technology"])
+        .drop_duplicates(subset=["Technology"], keep="first")
+        .set_index("Technology")["Classification"]
+        .to_dict()
+    )
+
+    items: list[dict] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    material_keys = material_keys.sort_values(["Technology", "Name", "Off-taker"], na_position="last")
+    for _, row in material_keys.iterrows():
+        technology = _clean_definition_text(row["Technology"])
+        category = _category_from_classification(classification.get(technology, ""))
+        if not category:
+            continue
+        name = _clean_definition_text(row["Name"]) or _clean_definition_text(row["Off-taker"])
+        currency = _clean_definition_text(row["Currency"])
+        offtaker = _clean_definition_text(row["Off-taker"])
+        if not name or not currency:
+            continue
+        key = (category, name, currency, offtaker)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "Category": category,
+                "Name": name,
+                "Currency": currency,
+                "Type": category[:-1] if category == "Exports" else category,
+                "Offtaker": offtaker,
+            }
+        )
+
+    output_rows: list[dict] = []
+    for category in CONSUMER_SEGMENT_CATEGORIES:
+        output_rows.append({"Name": category, "Currency": "", "Type": "", "Offtaker": ""})
+        for item in items:
+            if item["Category"] == category:
+                output_rows.append({col: item[col] for col in columns})
+    return pd.DataFrame(output_rows, columns=columns)
+
+
 def _load_excel_data_pure_input_workbook(file_path: str) -> dict:
     """
     Map MINFin Python Input File.xlsx sheets to the same keys as legacy ``load_excel_data``.
@@ -164,7 +280,9 @@ def _load_excel_data_pure_input_workbook(file_path: str) -> dict:
     df_financing_baseline = pd.DataFrame(columns=["Name", "Description"])
     df_funding_baseline = pd.DataFrame(columns=["Name", "Description"])
     df_scenarios = pd.DataFrame(columns=["Name", "Description"])
-    consumer_segments = pd.DataFrame(columns=["Name", "Currency", "Type", "Offtaker"])
+    consumer_segments = _read_consumer_segments_from_wholesale_revenue(
+        file_path, df_technologies_classification
+    )
     # Classification map (match legacy)
     classification_map = df_technologies_classification.set_index("Technology")["Classification"]
     df_technologies = df_technologies.copy()

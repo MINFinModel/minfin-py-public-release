@@ -50,6 +50,20 @@ def test_apply_investment_to_tech_dataframes_populates_columns():
     assert tech_dataframes["Biomass"].loc[2025, "investment_need"] == 95.0
 
 
+def test_apply_investment_to_tech_dataframes_preserves_workbook_grants():
+    tech_dataframes = {
+        "Solar PV": pd.DataFrame({"total_grant_amount": [2.0, 0.0]}, index=[2025, 2026])
+    }
+    category = pd.DataFrame({"Solar PV": [100.0, 200.0]}, index=[2025, 2026])
+
+    apply_investment_to_tech_dataframes(tech_dataframes, category, grant_share=0.05)
+
+    assert tech_dataframes["Solar PV"].loc[2025, "total_grant_amount"] == 2.0
+    assert tech_dataframes["Solar PV"].loc[2026, "total_grant_amount"] == 0.0
+    assert tech_dataframes["Solar PV"].loc[2025, "investment_need"] == 98.0
+    assert tech_dataframes["Solar PV"].loc[2026, "investment_need"] == 200.0
+
+
 def test_assign_series_column_warns_on_misaligned_indices():
     tech_df = pd.DataFrame(index=[2025, 2026])
     bad = pd.Series([1.0, 2.0], index=[0, 1])

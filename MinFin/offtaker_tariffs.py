@@ -257,7 +257,7 @@ def compute_capacity_purchased_and_avg_fee(
     tech_dataframes: dict,
     df_technologies: pd.DataFrame,
     exchange_rates: pd.DataFrame = None,
-    dash_curr: str = None,
+    dash_curr: str = "USD",
     cap_gwh_col: str = "ppa_contracted_capacity",
     cap_fee_col: str = "ppa_capacity_fee",
     ppa_currency_col: str = "ppa_currency",
@@ -321,7 +321,7 @@ def compute_generation_purchased_series(
     export_source: str = "Generation",
     return_breakdown: bool = False,
     exchange_rates: pd.DataFrame = None,
-    dash_curr: str = None,
+    dash_curr: str = "USD",
 ):
     """Per-year Generation Purchased and AverageTariff series."""
     if years is None:
@@ -360,7 +360,7 @@ def compute_capacity_purchased_series(
     df_technologies: pd.DataFrame,
     years: list = None,
     exchange_rates: pd.DataFrame = None,
-    dash_curr: str = None,
+    dash_curr: str = "USD",
     cap_gwh_col: str = "ppa_contracted_capacity",
     cap_fee_col: str = "ppa_capacity_fee",
     ppa_currency_col: str = "ppa_currency",
@@ -377,6 +377,64 @@ def compute_capacity_purchased_series(
         cap_list.append(c)
         fee_list.append(f)
     return pd.Series(cap_list, index=years), pd.Series(fee_list, index=years)
+
+
+def _has_meaningful_series(df: pd.DataFrame, column: str) -> bool:
+    if column not in df.columns:
+        return False
+    values = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
+    return bool((values != 0).any())
+
+
+def apply_network_receivables(
+    tech_dataframes: dict[str, pd.DataFrame],
+    df_technologies: pd.DataFrame,
+    *,
+    preserve_existing: bool = True,
+    preserve_zero_existing: bool = False,
+) -> None:
+    """Apply Excel-style network receivables where no input receivables exist.
+
+    Legacy Technology Disag links Transmission receivables to Transmission power-purchase cost
+    and Distribution receivables to the negative Transmission receivables. Pure-input files can
+    provide receivables directly in OTHER REVENUE; set ``preserve_zero_existing`` when zero is an
+    intentional input value rather than a blank legacy row.
+    """
+    transmission_names = [
+        name
+        for name in tech_dataframes
+        if _classify_segment(_get_tech_class(name, df_technologies)) == SEGMENT_MAP["Transmission"]
+    ]
+    distribution_names = [
+        name
+        for name in tech_dataframes
+        if _classify_segment(_get_tech_class(name, df_technologies)) == SEGMENT_MAP["Distribution"]
+    ]
+    if not transmission_names:
+        return
+
+    transmission = transmission_names[0]
+    trans_df = tech_dataframes[transmission]
+    if "power_purchase_cost" not in trans_df.columns:
+        return
+
+    trans_has_input = "receivables" in trans_df.columns and (
+        preserve_zero_existing or _has_meaningful_series(trans_df, "receivables")
+    )
+    if not preserve_existing or not trans_has_input:
+        trans_df["receivables"] = pd.to_numeric(
+            trans_df["power_purchase_cost"], errors="coerce"
+        ).fillna(0.0)
+
+    trans_receivables = pd.to_numeric(trans_df["receivables"], errors="coerce").fillna(0.0)
+    for distribution in distribution_names:
+        dist_df = tech_dataframes[distribution]
+        dist_has_input = "receivables" in dist_df.columns and (
+            preserve_zero_existing or _has_meaningful_series(dist_df, "receivables")
+        )
+        if preserve_existing and dist_has_input:
+            continue
+        dist_df["receivables"] = -trans_receivables.reindex(dist_df.index).fillna(0.0)
 
 
 def _exchange_rate_series(

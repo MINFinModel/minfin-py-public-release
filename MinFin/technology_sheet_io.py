@@ -83,7 +83,7 @@ def generate_share_configs(
     for _, row in filtered_df.iterrows():
         if str(row.get("Category", "")).strip().lower() != "exports":
             name = row["Name"]
-            base_slug = name.lower().replace(" ", "_").replace(":", "").replace("-", "_")
+            base_slug = str(name).lower().replace(" ", "_").replace(":", "").replace("-", "_")
             share_key = f"{base_slug}_share_{row['Currency']}"
             configs[share_key] = {
                 "offset": share_start_offset + count,
@@ -113,6 +113,36 @@ def pure_input_tech_sheets() -> tuple[str, str, str]:
 def use_pure_input_tech_extraction(file_path: str) -> bool:
     """True if *file_path* is the long-table workbook (no Technology Disag sheet)."""
     return detect_workbook_format(file_path) == WORKBOOK_FORMAT_PURE_INPUT
+
+
+def infer_technology_disag_start_rows(
+    df_full: pd.DataFrame,
+    technology_names: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> dict[str, int]:
+    """Infer 1-based Technology Disag block starts from the visible technology labels.
+
+    Legacy workbooks have used different block row offsets over time. A real technology block
+    has the technology name in column B and an ``Investment Need`` row shortly below it; the
+    top navigation labels do not. Returning 1-based rows keeps compatibility with
+    :func:`extract_tech_data_relative` and :data:`TECH_START_ROWS`.
+    """
+    if df_full is None or df_full.empty or df_full.shape[1] < 2:
+        return {}
+
+    wanted = {str(t).strip() for t in technology_names or [] if str(t).strip()}
+    starts: dict[str, int] = {}
+    for idx in range(len(df_full)):
+        value = df_full.iloc[idx, 1]
+        if pd.isna(value):
+            continue
+        tech = str(value).strip()
+        if wanted and tech not in wanted:
+            continue
+        nearby = df_full.iloc[idx : min(idx + 12, len(df_full)), 1].astype(str)
+        if not nearby.str.contains("Investment Need", case=False, regex=False).any():
+            continue
+        starts[tech] = idx + 1
+    return starts
 
 
 def new_infrastructure_technology_list(file_path: str) -> list[str]:
@@ -227,6 +257,19 @@ def _row_to_year_array(row, year_cols: list) -> np.ndarray:
     return out
 
 
+def _clean_workbook_text(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in {"", "nan", "none"} else text
+
+
+def _currency_from_workbook_row(row) -> str:
+    if row is None or not hasattr(row, "get"):
+        return ""
+    return _clean_workbook_text(row.get("Currency"))
+
+
 def extract_tech_data_pure_input(
     file_path: str,
     tech_name: str,
@@ -241,7 +284,8 @@ def extract_tech_data_pure_input(
     :data:`PURE_INPUT_STATIC_FIELD_SOURCES` and the dynamic share/price blocks (offsets from
     :func:`generate_share_configs`).
 
-    * ``ppa_currency`` is not stored as a time series in the new file; a zero row is returned for API parity.
+    * ``ppa_currency`` is not stored as a time series in the new file; it is populated from
+      the relevant pure-input ``Currency`` cells, defaulting to USD when those cells are blank.
     """
     ppa = _read_pure_input_long_sheet(file_path, "PPA REVENUE")
     oth = _read_pure_input_long_sheet(file_path, "OTHER REVENUE")
@@ -297,11 +341,15 @@ def extract_tech_data_pure_input(
             values = z.copy()
 
         unit = unit_from_workbook_row(row, fallback_unit)
-        tech_data[field_name] = {"values": values, "unit": unit}
+        tech_data[field_name] = {
+            "values": values,
+            "unit": unit,
+            "currency": _currency_from_workbook_row(row),
+        }
 
-    # Pure-input workbooks omit a PPA currency time series; infer from tariff units.
+    # Pure-input workbooks omit a PPA currency time series; use explicit Currency cells.
     if "ppa_currency" in tech_data:
-        inferred = None
+        inferred = ""
         for key in (
             "ppa_standard_tariff",
             "ppa_direct_offtaker_tariff",
@@ -311,16 +359,14 @@ def extract_tech_data_pure_input(
         ):
             payload = tech_data.get(key)
             if isinstance(payload, dict):
-                unit = str(payload.get("unit", "")).upper()
-                for code in ("KES", "USD", "EUR", "GBP", "JPY", "CNY"):
-                    if code in unit:
-                        inferred = code
-                        break
+                inferred = _clean_workbook_text(payload.get("currency"))
             if inferred:
                 break
+        currency = inferred or "USD"
         tech_data["ppa_currency"] = {
-            "values": z.copy(),
-            "unit": inferred or "USD",
+            "values": np.array([currency] * n, dtype=object),
+            "unit": currency,
+            "currency": currency,
         }
 
     return tech_data

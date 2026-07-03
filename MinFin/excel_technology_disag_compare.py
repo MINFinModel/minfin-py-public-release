@@ -32,7 +32,7 @@ EXCEL_LABEL_TO_PYTHON_VARIABLE: dict[str, str] = {
     "Corporate Tax Expense (Million USD)": "corporate_tax_expenses",
     "Corporate Tax Rate %": "corporate_tax_rate",
     "Financing Requirement (Million USD)": "Financing Requirement",
-    "Investment Need (Million USD)": "capital_cost",
+    "Investment Need (Million USD)": "investment_need",
     "Existing Financing Requirement (Million USD)": "Existing Financing Requirement",
     "Total Grant Amount (Million USD)": "total_grant_amount",
     "Wholesale Generation (GWh/Year)": "whole_sale_generation",

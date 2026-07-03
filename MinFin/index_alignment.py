@@ -116,21 +116,37 @@ def apply_investment_to_tech_dataframes(
     *,
     grant_share: float = 0.0,
 ) -> None:
-    """Populate grant and investment-need columns using year-aligned category sums."""
+    """Populate grant and net investment-need columns using year-aligned category sums.
+
+    When a technology frame already carries ``total_grant_amount`` from the input workbook,
+    preserve that workbook series. Otherwise fall back to the legacy percentage shortcut.
+    """
     category = ensure_year_index(df_category_sum)
     for tech_name, tech_df in tech_dataframes.items():
         if tech_name not in category.columns:
             continue
-        capital = category[tech_name]
+        capital = align_series_to_index(
+            category[tech_name],
+            tech_df.index,
+            context=f"{tech_name} capital_cost",
+        )
+        if "total_grant_amount" in tech_df.columns:
+            grant = align_series_to_index(
+                pd.to_numeric(tech_df["total_grant_amount"], errors="coerce").fillna(0.0),
+                tech_df.index,
+                context=f"{tech_name} total_grant_amount",
+            )
+        else:
+            grant = capital * grant_share
         assign_series_column(
             tech_df,
             "total_grant_amount",
-            capital * grant_share,
+            grant,
             context=f"{tech_name} total_grant_amount",
         )
         assign_series_column(
             tech_df,
             "investment_need",
-            capital * (1.0 - grant_share),
+            (capital - grant).clip(lower=0.0),
             context=f"{tech_name} investment_need",
         )

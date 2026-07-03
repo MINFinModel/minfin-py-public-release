@@ -204,6 +204,40 @@ def test_build_technology_output_raw_table_uses_workbook_units():
     assert df.loc[df["Variable"] == "cashflow", "unit"].iat[0] == "Mn USD"
 
 
+def test_build_technology_output_raw_table_uses_dashboard_units_for_computed_tariffs():
+    tech_dataframes = {
+        "Distribution": pd.DataFrame(
+            {
+                "tariff": [0.1],
+                "sale_price": [0.2],
+                "capacity_tariff": [1.5],
+            },
+            index=[2030],
+        ),
+    }
+    all_tech_data = {
+        "Distribution": {
+            "ppa_standard_tariff": {"values": [12.0], "unit": "KES/kWh"},
+            "ppa_capacity_fee": {"values": [120.0], "unit": "Mn KES/MW"},
+        }
+    }
+    df_technologies = pd.DataFrame(
+        {"Technology": ["Distribution"], "Classification": ["Distribution"]}
+    )
+
+    df = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        all_tech_data=all_tech_data,
+        df_technologies=df_technologies,
+        years=[2030],
+    )
+
+    units = df.set_index("Variable")["unit"].to_dict()
+    assert units["tariff"] == "USD/kWh"
+    assert units["sale_price"] == "USD/kWh"
+    assert units["capacity_tariff"] == "Mn USD/MW"
+
+
 def test_build_technology_output_raw_table_units_local_source_rows_separately():
     tech_dataframes = {
         "Battery": pd.DataFrame(
@@ -489,3 +523,26 @@ def test_build_technology_output_raw_table_excludes_ffe_investment_block():
     variables = set(df["Variable"])
     assert "capital_cost" in variables
     assert "ffe" not in variables
+
+
+def test_build_technology_output_raw_table_reports_gross_capital_and_investment_need():
+    tech_dataframes = {
+        "Solar PV": pd.DataFrame({"investment_need": [95.0]}, index=[2025]),
+    }
+    investment_blocks = {
+        "capital_cost": pd.DataFrame({"PWRSOL": [100.0]}, index=[2025]),
+    }
+    df_technologies = pd.DataFrame(
+        {"Technology": ["Solar PV"], "Name": ["PWRSOL"]}
+    )
+
+    df = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        investment_blocks=investment_blocks,
+        df_technologies=df_technologies,
+        years=[2025],
+    )
+
+    values = df.set_index("Variable")["ResultValue"].to_dict()
+    assert values["investment_need"] == 95.0
+    assert values["capital_cost"] == 100.0
