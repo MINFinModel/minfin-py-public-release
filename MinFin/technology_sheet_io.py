@@ -286,7 +286,12 @@ def extract_tech_data_pure_input(
 
     * ``ppa_currency`` is not stored as a time series in the new file; it is populated from
       the relevant pure-input ``Currency`` cells, defaulting to USD when those cells are blank.
+    * Scenario labels follow :func:`MinFin.pure_input_blocks.pure_input_scenario_label`
+      (COVER!C10 when the workbook uses a non-default name such as ``Mitigation``).
     """
+    from MinFin.pure_input_blocks import pure_input_scenario_label
+
+    scenario = pure_input_scenario_label(scenario, file_path)
     ppa = _read_pure_input_long_sheet(file_path, "PPA REVENUE")
     oth = _read_pure_input_long_sheet(file_path, "OTHER REVENUE")
     wsl = _read_pure_input_long_sheet(file_path, "WHOLESALE REVENUE")
@@ -294,15 +299,16 @@ def extract_tech_data_pure_input(
     if not year_cols:
         return {}
 
+    scen = wsl["Scenario"].astype(str).str.strip()
     sh_w = wsl[
         (wsl["Variable"] == "Share of Off-take")
         & (wsl["Technology"] == tech_name)
-        & (wsl["Scenario"] == scenario)
+        & (scen == scenario)
     ].sort_values(["Name", "Off-taker"], na_position="last")
     pr_w = wsl[
         (wsl["Variable"] == "Wholesale Price")
         & (wsl["Technology"] == tech_name)
-        & (wsl["Scenario"] == scenario)
+        & (scen == scenario)
     ].sort_values(["Name", "Off-taker"], na_position="last")
 
     tech_data: dict = {}
@@ -327,7 +333,7 @@ def extract_tech_data_pure_input(
             sub = src[
                 (src["Variable"] == var)
                 & (src["Technology"] == tech_name)
-                & (src["Scenario"] == scenario)
+                & (src["Scenario"].astype(str).str.strip() == scenario)
             ]
             row = sub.iloc[0] if len(sub) else None
         else:

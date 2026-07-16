@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import warnings
+from functools import lru_cache
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -10,8 +12,66 @@ import pandas as pd
 from MinFin.excel_io import read_investment_plan_long, year_columns_from_dataframe
 
 
-def pure_input_scenario_label(scenario: str) -> str:
-    return {"net_zero": "Net Zero", "least_cost": "Least Cost"}.get(scenario, scenario)
+@lru_cache(maxsize=8)
+def read_cover_scenario(file_path: str) -> Optional[str]:
+    """Return the active scenario name from COVER!C10 when B10 is ``Scenario``.
+
+    Pure-input country files (e.g. Türkiye) put the INVESTMENT PLAN / revenue
+    Scenario label in COVER cell C10. Older Kenya-style covers use B10 for Notes
+    and leave C10 blank — those return ``None`` so callers fall back to the
+    hardcoded ``Net Zero`` / ``Least Cost`` labels.
+    """
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    except Exception:
+        return None
+    try:
+        if "COVER" not in wb.sheetnames:
+            return None
+        ws = wb["COVER"]
+        if str(ws["B10"].value or "").strip().lower() != "scenario":
+            return None
+        value = ws["C10"].value
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        text = str(value).strip()
+        if not text or text.lower() in {"nan", "none"}:
+            return None
+        return text
+    finally:
+        wb.close()
+
+
+def pure_input_scenario_label(scenario: str, file_path: Optional[str] = None) -> str:
+    """Map internal scenario keys to workbook Scenario labels.
+
+    Prefer COVER!C10 when the default label (``Net Zero`` / ``Least Cost``) is
+    absent from INVESTMENT PLAN — so single-scenario files named ``Mitigation``
+    (etc.) load without renaming Excel rows. Multi-scenario workbooks that still
+    contain the default labels keep the existing mapping.
+    """
+    defaults = {"net_zero": "Net Zero", "least_cost": "Least Cost"}
+    default = defaults.get(scenario, scenario)
+    if not file_path:
+        return default
+
+    cover = read_cover_scenario(file_path)
+    if not cover:
+        return default
+
+    try:
+        found = {
+            str(s).strip()
+            for s in read_investment_plan_long(file_path)["Scenario"].dropna().unique()
+        }
+    except Exception:
+        found = set()
+
+    if default in found:
+        return default
+    return cover
 
 
 def pivot_investment_block(
@@ -62,8 +122,8 @@ def build_input_blocks_from_pure_input_file(scenario: str, file_path: str) -> di
     if not year_cols:
         raise ValueError("INVESTMENT PLAN: no year columns found (expected 2025, 2026, …)")
 
-    label = pure_input_scenario_label(scenario)
-    if label not in df["Scenario"].dropna().unique():
+    label = pure_input_scenario_label(scenario, file_path)
+    if label not in set(df["Scenario"].dropna().astype(str).str.strip()):
         warnings.warn(
             f"INVESTMENT PLAN has no rows for scenario {label!r}. "
             f"Found: {list(df['Scenario'].dropna().unique())}. "
@@ -74,7 +134,10 @@ def build_input_blocks_from_pure_input_file(scenario: str, file_path: str) -> di
     n_rows = 56
 
     def _block(variable_name: str) -> pd.DataFrame:
-        sub = df[(df["Variable"] == variable_name) & (df["Scenario"] == label)]
+        sub = df[
+            (df["Variable"] == variable_name)
+            & (df["Scenario"].astype(str).str.strip() == label)
+        ]
         return pivot_investment_block(sub, year_cols, n_rows=n_rows, block_name=variable_name)
 
     capital = _block("Capital Cost")
@@ -95,12 +158,13 @@ def build_input_blocks_from_pure_input_file(scenario: str, file_path: str) -> di
 def pure_input_other_input_series(
     file_path: str, scenario: str, year_cols, n_years: int = 46
 ) -> dict:
-    label = pure_input_scenario_label(scenario)
+    label = pure_input_scenario_label(scenario, file_path)
     df = read_investment_plan_long(file_path)
     yc = [c for c in year_columns_from_dataframe(df)][:n_years]
+    scen = df["Scenario"].astype(str).str.strip()
 
     def _row_values(variable_name: str) -> list:
-        r = df[(df["Variable"] == variable_name) & (df["Scenario"] == label)]
+        r = df[(df["Variable"] == variable_name) & (scen == label)]
         if r.empty:
             return [0.0] * n_years
         row = r.iloc[0]
@@ -112,7 +176,7 @@ def pure_input_other_input_series(
             vals.append(0.0)
         return vals[:n_years]
 
-    opex_sub = df[(df["Variable"] == "OPEX") & (df["Scenario"] == label)]
+    opex_sub = df[(df["Variable"] == "OPEX") & (scen == label)]
     var_cost = []
     for c in yc:
         s = 0.0
@@ -125,7 +189,7 @@ def pure_input_other_input_series(
     var_cost = var_cost[:n_years]
 
     emissions = _row_values("Emissions")
-    r_c = df[(df["Variable"] == "Carbon Price") & (df["Scenario"] == label)]
+    r_c = df[(df["Variable"] == "Carbon Price") & (scen == label)]
     if r_c.empty:
         carbon = [0.0] * n_years
     else:
@@ -154,7 +218,8 @@ def emission_savings_series_from_investment_plan(
     sub = df.loc[mask]
     if sub.empty:
         return pd.Series(0.0, index=totals_index, dtype=float, name="emission_savings")
-    nz = sub[sub["Scenario"].astype(str).str.strip().eq("Net Zero")]
+    label = pure_input_scenario_label("net_zero", file_path)
+    nz = sub[sub["Scenario"].astype(str).str.strip().eq(label)]
     row = nz.iloc[0] if len(nz) else sub.iloc[0]
     vals_by_year: dict[int, float] = {}
     for c in year_columns_from_dataframe(df):

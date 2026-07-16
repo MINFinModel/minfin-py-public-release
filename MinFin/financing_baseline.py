@@ -100,6 +100,33 @@ def historical_from_existing_infrastructure(ex: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def macroeconomic_currency_codes(file_path: str) -> tuple[str | None, str | None]:
+    """Return ``(local_currency, foreign_currency)`` codes from **MACROECONOMIC** column C.
+
+    Looks for rows labeled ``Local Currency`` / ``Foreign Currency`` (parameter column B).
+    Missing labels yield ``None`` for that side.
+    """
+    mac = pd.read_excel(file_path, sheet_name="MACROECONOMIC", header=None, engine="openpyxl")
+    local: str | None = None
+    foreign: str | None = None
+    for i in range(mac.shape[0]):
+        label = mac.iloc[i, 1]
+        if pd.isna(label):
+            continue
+        label = str(label).strip().lower()
+        code = mac.iloc[i, 2]
+        if pd.isna(code):
+            continue
+        code = str(code).strip()
+        if not code or code.lower() in {"nan", "none", "code"}:
+            continue
+        if label == "local currency":
+            local = code
+        elif label == "foreign currency":
+            foreign = code
+    return local, foreign
+
+
 def exchange_rates_wide_from_macroeconomic(file_path: str) -> pd.DataFrame:
     """
     Build a year × currency table from **MACROECONOMIC** (same role as the top of legacy *Financing Baseline*).
@@ -149,6 +176,7 @@ class financing_baseline_extractor:
         starting_year=2024,
         number_of_payments_per_annum=1,
         *,
+        foreign_currency: str = "USD",
         historical_from_existing: pd.DataFrame | None = None,
         exchange_rates_wide: pd.DataFrame | None = None,
         macro_rates_dict: dict | None = None,
@@ -156,7 +184,7 @@ class financing_baseline_extractor:
         self.currency = currency
         self.years = list(range(2010, 2071))
         self.starting_year = starting_year
-        self.foreign_currency = "USD"
+        self.foreign_currency = foreign_currency
         self.discount_rate = 5.33 / 100  # 'High Level Dashboard'!E34
         self.number_of_payments_per_annum = number_of_payments_per_annum
         self.starting_rows = {"exchange_rate": 35, "historical baseline": 49}
@@ -174,10 +202,21 @@ class financing_baseline_extractor:
             self.historical = self.get_historical()
 
     @classmethod
-    def from_workbook(cls, file_path: str, currency="KES", starting_year=2024, number_of_payments_per_annum=1):
+    def from_workbook(
+        cls,
+        file_path: str,
+        currency=None,
+        starting_year=2024,
+        number_of_payments_per_annum=1,
+        foreign_currency=None,
+    ):
         """
         Build an extractor from either the legacy **Financing Baseline** sheet or the pure-input workbook
         (**EXISTING INFRASTRUCTURE** + **MACROECONOMIC** exchange block).
+
+        For pure-input workbooks, local/foreign currency codes default to
+        **MACROECONOMIC** ``Local Currency`` / ``Foreign Currency`` (column C) when
+        *currency* / *foreign_currency* are not passed explicitly.
         """
         from MinFin.data_processor import WORKBOOK_FORMAT_PURE_INPUT, detect_workbook_format
 
@@ -190,11 +229,15 @@ class financing_baseline_extractor:
             macro_d = (
                 macro_rates_dict_from_exchange_wide(ex_wide) if len(ex_wide) else None
             )
+            local_c, foreign_c = macroeconomic_currency_codes(file_path)
+            currency = currency or local_c or "KES"
+            foreign_currency = foreign_currency or foreign_c or "USD"
             return cls(
                 pd.DataFrame(),
                 currency=currency,
                 starting_year=starting_year,
                 number_of_payments_per_annum=number_of_payments_per_annum,
+                foreign_currency=foreign_currency,
                 historical_from_existing=hist,
                 exchange_rates_wide=ex_wide if len(ex_wide) else None,
                 macro_rates_dict=macro_d,
@@ -202,9 +245,10 @@ class financing_baseline_extractor:
         df_fb = pd.read_excel(file_path, sheet_name="Financing Baseline", engine="openpyxl")
         return cls(
             df_fb,
-            currency=currency,
+            currency=currency or "KES",
             starting_year=starting_year,
             number_of_payments_per_annum=number_of_payments_per_annum,
+            foreign_currency=foreign_currency or "USD",
         )
 
     def get_exchange_rates_by_year(self):
