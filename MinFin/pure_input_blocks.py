@@ -47,31 +47,41 @@ def read_cover_scenario(file_path: str) -> Optional[str]:
 def pure_input_scenario_label(scenario: str, file_path: Optional[str] = None) -> str:
     """Map internal scenario keys to workbook Scenario labels.
 
-    Prefer COVER!C10 when the default label (``Net Zero`` / ``Least Cost``) is
-    absent from INVESTMENT PLAN — so single-scenario files named ``Mitigation``
-    (etc.) load without renaming Excel rows. Multi-scenario workbooks that still
-    contain the default labels keep the existing mapping.
+    Resolution order when *file_path* is set:
+
+    1. Hardcoded default (``Net Zero`` / ``Least Cost``) if that label exists in
+       INVESTMENT PLAN.
+    2. COVER!C10 when B10 is ``Scenario`` and the cell is non-empty (and either
+       matches a plan scenario or the plan has no scenarios yet).
+    3. The sole distinct INVESTMENT PLAN scenario (e.g. ``IRP``, ``Mitigation``)
+       when the defaults are absent — country files often leave COVER!C10 blank.
+    4. COVER!C10 if set, otherwise the hardcoded default.
     """
     defaults = {"net_zero": "Net Zero", "least_cost": "Least Cost"}
     default = defaults.get(scenario, scenario)
     if not file_path:
         return default
 
-    cover = read_cover_scenario(file_path)
-    if not cover:
-        return default
-
     try:
         found = {
             str(s).strip()
             for s in read_investment_plan_long(file_path)["Scenario"].dropna().unique()
+            if str(s).strip() and str(s).strip().lower() not in {"nan", "none"}
         }
     except Exception:
         found = set()
 
     if default in found:
         return default
-    return cover
+
+    cover = read_cover_scenario(file_path)
+    if cover and (not found or cover in found):
+        return cover
+    if len(found) == 1:
+        return next(iter(found))
+    if cover:
+        return cover
+    return default
 
 
 def pivot_investment_block(

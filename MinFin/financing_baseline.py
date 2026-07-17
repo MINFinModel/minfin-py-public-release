@@ -308,7 +308,9 @@ class financing_baseline_extractor:
         """
         base_currency=self.currency
         foreign_currency=self.foreign_currency
-        rd = rates_by_year if rates_by_year is not None else exchange_rates_by_year
+        rd = rates_by_year if rates_by_year is not None else (
+            self._macro_rates_dict or exchange_rates_by_year
+        )
 
         df[f"Volume in {base_currency}"] = df["Volume of Finance"] * get_exchange_rates(
             base_currency, df["Currency"], df["Year"], rd

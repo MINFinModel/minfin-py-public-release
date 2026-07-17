@@ -117,13 +117,22 @@ def test_pure_input_scenario_label_keeps_defaults_when_present(tmp_path):
     assert pure_input_scenario_label("least_cost", str(path)) == "Least Cost"
 
 
-def test_build_blocks_uses_cover_mitigation(tmp_path):
-    path = tmp_path / "mitigation_blocks.xlsx"
-    _write_investment_plan(path, scenarios=["Mitigation"], cover_scenario="Mitigation")
+def test_pure_input_scenario_label_uses_sole_plan_scenario_when_cover_blank(tmp_path):
+    """Zambia-style: COVER!B10 is Scenario but C10 empty; plan only has IRP."""
+    path = tmp_path / "irp.xlsx"
+    _write_investment_plan(path, scenarios=["IRP"], cover_scenario=None)
+    # Match Zambia cover layout: label present, value blank
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    ws = wb["COVER"]
+    ws["B10"] = "Scenario"
+    ws["C10"] = None
+    wb.save(path)
     read_cover_scenario.cache_clear()
 
+    assert read_cover_scenario(str(path)) is None
+    assert pure_input_scenario_label("net_zero", str(path)) == "IRP"
     blocks = build_input_blocks_from_pure_input_file("net_zero", str(path))
-    elec = blocks["elec_production"]
-    assert not elec.empty
-    assert "TechA" in elec.columns
-    assert float(elec.loc[elec["Year"] == 2025, "TechA"].iloc[0]) == 1.0
+    assert not blocks["elec_production"].empty
+    assert "TechA" in blocks["elec_production"].columns
