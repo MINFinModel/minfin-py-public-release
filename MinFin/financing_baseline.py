@@ -100,6 +100,35 @@ def historical_from_existing_infrastructure(ex: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def macroeconomic_display_currency(file_path: str) -> str:
+    """Return the **MACROECONOMIC** Display Currency code (default ``USD``).
+
+    Pure-input layout: row labeled ``Display Currency`` in column B; the code is
+    usually in the Time-Independent column (index 4), with column C as fallback.
+    """
+    try:
+        mac = pd.read_excel(file_path, sheet_name="MACROECONOMIC", header=None, engine="openpyxl")
+    except Exception:
+        return "USD"
+    for i in range(mac.shape[0]):
+        label = mac.iloc[i, 1]
+        if pd.isna(label):
+            continue
+        if str(label).strip().lower() != "display currency":
+            continue
+        for col in (4, 2, 3):
+            if col >= mac.shape[1]:
+                continue
+            value = mac.iloc[i, col]
+            if pd.isna(value):
+                continue
+            text = str(value).strip()
+            if text and text.lower() not in {"nan", "none", "code", "unit", "lcu/usd"}:
+                return text
+        break
+    return "USD"
+
+
 def macroeconomic_currency_codes(file_path: str) -> tuple[str | None, str | None]:
     """Return ``(local_currency, foreign_currency)`` codes from **MACROECONOMIC** column C.
 
@@ -177,6 +206,7 @@ class financing_baseline_extractor:
         number_of_payments_per_annum=1,
         *,
         foreign_currency: str = "USD",
+        display_currency: str = "USD",
         historical_from_existing: pd.DataFrame | None = None,
         exchange_rates_wide: pd.DataFrame | None = None,
         macro_rates_dict: dict | None = None,
@@ -185,6 +215,7 @@ class financing_baseline_extractor:
         self.years = list(range(2010, 2071))
         self.starting_year = starting_year
         self.foreign_currency = foreign_currency
+        self.display_currency = display_currency or "USD"
         self.discount_rate = 5.33 / 100  # 'High Level Dashboard'!E34
         self.number_of_payments_per_annum = number_of_payments_per_annum
         self.starting_rows = {"exchange_rate": 35, "historical baseline": 49}
@@ -209,6 +240,7 @@ class financing_baseline_extractor:
         starting_year=2024,
         number_of_payments_per_annum=1,
         foreign_currency=None,
+        display_currency=None,
     ):
         """
         Build an extractor from either the legacy **Financing Baseline** sheet or the pure-input workbook
@@ -216,7 +248,8 @@ class financing_baseline_extractor:
 
         For pure-input workbooks, local/foreign currency codes default to
         **MACROECONOMIC** ``Local Currency`` / ``Foreign Currency`` (column C) when
-        *currency* / *foreign_currency* are not passed explicitly.
+        *currency* / *foreign_currency* are not passed explicitly. Display Currency
+        (MACROECONOMIC Time-Independent cell) defaults to ``USD`` when blank.
         """
         from MinFin.data_processor import WORKBOOK_FORMAT_PURE_INPUT, detect_workbook_format
 
@@ -232,12 +265,14 @@ class financing_baseline_extractor:
             local_c, foreign_c = macroeconomic_currency_codes(file_path)
             currency = currency or local_c or "KES"
             foreign_currency = foreign_currency or foreign_c or "USD"
+            display_currency = display_currency or macroeconomic_display_currency(file_path)
             return cls(
                 pd.DataFrame(),
                 currency=currency,
                 starting_year=starting_year,
                 number_of_payments_per_annum=number_of_payments_per_annum,
                 foreign_currency=foreign_currency,
+                display_currency=display_currency,
                 historical_from_existing=hist,
                 exchange_rates_wide=ex_wide if len(ex_wide) else None,
                 macro_rates_dict=macro_d,
@@ -249,6 +284,7 @@ class financing_baseline_extractor:
             starting_year=starting_year,
             number_of_payments_per_annum=number_of_payments_per_annum,
             foreign_currency=foreign_currency or "USD",
+            display_currency=display_currency or "USD",
         )
 
     def get_exchange_rates_by_year(self):

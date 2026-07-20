@@ -50,12 +50,14 @@ def pure_input_scenario_label(scenario: str, file_path: Optional[str] = None) ->
     Resolution order when *file_path* is set:
 
     1. Hardcoded default (``Net Zero`` / ``Least Cost``) if that label exists in
-       INVESTMENT PLAN.
-    2. COVER!C10 when B10 is ``Scenario`` and the cell is non-empty (and either
-       matches a plan scenario or the plan has no scenarios yet).
+       INVESTMENT PLAN (keeps multi-scenario Kenya-style loads correct).
+    2. COVER!C10 when B10 is ``Scenario`` and the cell is non-empty.
     3. The sole distinct INVESTMENT PLAN scenario (e.g. ``IRP``, ``Mitigation``)
-       when the defaults are absent — country files often leave COVER!C10 blank.
-    4. COVER!C10 if set, otherwise the hardcoded default.
+       when COVER is blank and the defaults are absent.
+    4. The hardcoded default.
+
+    For **exports**, prefer :func:`read_cover_scenario` when C10 is set so the
+    Scenario column matches the COVER label even if the plan still uses defaults.
     """
     defaults = {"net_zero": "Net Zero", "least_cost": "Least Cost"}
     default = defaults.get(scenario, scenario)
@@ -75,13 +77,20 @@ def pure_input_scenario_label(scenario: str, file_path: Optional[str] = None) ->
         return default
 
     cover = read_cover_scenario(file_path)
-    if cover and (not found or cover in found):
+    if cover:
         return cover
     if len(found) == 1:
         return next(iter(found))
-    if cover:
-        return cover
     return default
+
+
+def export_scenario_label(file_path: Optional[str] = None) -> str:
+    """Scenario name written to output tables: COVER!C10 when set, else adaptive plan label."""
+    if file_path:
+        cover = read_cover_scenario(file_path)
+        if cover:
+            return cover
+    return pure_input_scenario_label("net_zero", file_path)
 
 
 def pivot_investment_block(

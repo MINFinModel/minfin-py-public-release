@@ -117,6 +117,16 @@ def test_pure_input_scenario_label_keeps_defaults_when_present(tmp_path):
     assert pure_input_scenario_label("least_cost", str(path)) == "Least Cost"
 
 
+def test_export_scenario_label_prefers_cover_c10(tmp_path):
+    from MinFin.pure_input_blocks import export_scenario_label, read_cover_scenario
+
+    path = tmp_path / "cover_export.xlsx"
+    _write_investment_plan(path, scenarios=["Net Zero"], cover_scenario="Mitigation")
+    read_cover_scenario.cache_clear()
+    # Plan still has Net Zero for loading, but exports should show COVER!C10.
+    assert export_scenario_label(str(path)) == "Mitigation"
+
+
 def test_pure_input_scenario_label_uses_sole_plan_scenario_when_cover_blank(tmp_path):
     """Zambia-style: COVER!B10 is Scenario but C10 empty; plan only has IRP."""
     path = tmp_path / "irp.xlsx"

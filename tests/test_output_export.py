@@ -258,14 +258,67 @@ def test_build_technology_output_raw_table_units_local_source_rows_separately():
         financing_requirement_by_tech=financing_requirement_by_tech,
         variable_units={"capital_cost": "Mn USD", "total_grant_amount": "Mn USD"},
         years=[2032],
+        display_currency="USD",
         local_currency_code="KES",
         foreign_currency_code="USD",
+        exchange_rates=pd.DataFrame({"KES": [130.0], "USD": [1.0]}, index=[2032]),
     )
 
     units = df.set_index("Variable")["unit"].to_dict()
-    assert units["local_currency_debt_comm_dom"] == "Mn KES"
+    assert units["local_currency_debt_comm_dom"] == "Mn USD"
     assert units["foreign_currency_debt_comm_intl"] == "Mn USD"
     assert units["Loans (Comm_Dom)"] == "Mn USD"
+    local = df[df["Variable"] == "local_currency_debt_comm_dom"]["ResultValue"].iat[0]
+    foreign = df[df["Variable"] == "foreign_currency_debt_comm_intl"]["ResultValue"].iat[0]
+    # 11 KES → USD at 130 KES/USD
+    assert abs(local - 11.0 / 130.0) < 1e-9
+    assert abs(foreign - 2.0) < 1e-9
+
+
+def test_investment_allocation_converts_even_when_years_arg_empty():
+    """Regression: empty ``years=`` used to skip FX and leave local amounts labeled USD."""
+    tech_dataframes = {
+        "Battery": pd.DataFrame(
+            {"local_currency_debt_conc_dps": [3187.097298]},
+            index=[2025],
+        ),
+    }
+    df = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        years=[],  # previously caused no conversion
+        display_currency="USD",
+        local_currency_code="KES",
+        foreign_currency_code="USD",
+        exchange_rates=pd.DataFrame({"KES": [134.82], "USD": [1.0]}, index=[2025]),
+    )
+    val = df[df["Variable"] == "local_currency_debt_conc_dps"]["ResultValue"].iat[0]
+    assert abs(val - 3187.097298 / 134.82) < 1e-6
+    assert df["unit"].iat[0] == "Mn USD"
+
+
+def test_investment_allocation_units_fallback_without_display_currency():
+    tech_dataframes = {
+        "Battery": pd.DataFrame(
+            {
+                "local_currency_debt_comm_dom": [1.0],
+                "foreign_currency_debt_comm_intl": [2.0],
+            },
+            index=[2032],
+        ),
+    }
+
+    df = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        years=[2032],
+        local_currency_code="TRY",
+        foreign_currency_code="EUR",
+    )
+    units = df.set_index("Variable")["unit"].to_dict()
+    assert units["local_currency_debt_comm_dom"] == "Mn TRY"
+    assert units["foreign_currency_debt_comm_intl"] == "Mn EUR"
+    # Without display_currency + rates, values stay in native currencies.
+    local = df[df["Variable"] == "local_currency_debt_comm_dom"]["ResultValue"].iat[0]
+    assert local == 1.0
 
 
 def test_compute_financing_baseline_and_existing_requirement_from_repayment_schedule():
@@ -438,6 +491,40 @@ def test_build_technology_output_raw_table_includes_weighted_financing_summary()
     assert summary_rows["year"].isna().all()
     assert df.loc[df["Variable"] == "weighted_wacc", "ResultValue"].iat[0] == 8.2
     assert df.loc[df["Variable"] == "weighted_wacc", "unit"].iat[0] == "%"
+
+
+def test_build_technology_output_raw_table_includes_total_financing_requirement():
+    tech_dataframes = {
+        "Biomass": pd.DataFrame({"cashflow": [1.0, 2.0]}, index=[2025, 2026]),
+    }
+    financing_requirement_by_tech = {
+        "Biomass": pd.DataFrame(
+            {
+                2025: [10.0, 3.0, 13.0],
+                2026: [20.0, 5.0, 25.0],
+            },
+            index=[
+                "Financing Requirement",
+                "Existing Financing Requirement",
+                "total_financing_requirement",
+            ],
+        ),
+    }
+
+    df = build_technology_output_raw_table(
+        tech_dataframes=tech_dataframes,
+        financing_requirement_by_tech=financing_requirement_by_tech,
+        years=[2025, 2026],
+        scenario="IRP",
+    )
+
+    total = df[df["Variable"] == "total_financing_requirement"]
+    assert not total.empty
+    assert total["Scenario"].unique().tolist() == ["IRP"]
+    assert total["unit"].iat[0] == "Mn USD"
+    by_year = total.set_index("year")["ResultValue"].to_dict()
+    assert by_year[2025] == 13.0
+    assert by_year[2026] == 25.0
 
 
 def test_build_technology_output_raw_table_includes_gdp_share_metrics():

@@ -110,6 +110,8 @@ COMPUTED_VARIABLE_UNIT_SOURCES: dict[str, str] = {
     "interest_cost": "total_grant_amount",
     "cashflow": "total_grant_amount",
     "Financing Requirement": "total_grant_amount",
+    "Existing Financing Requirement": "total_grant_amount",
+    "total_financing_requirement": "total_grant_amount",
     "financing_baseline": "total_grant_amount",
     "existing_financing_requirement": "total_grant_amount",
 }
@@ -140,6 +142,8 @@ DEFAULT_VARIABLE_UNITS: dict[str, str] = {
     "interest_cost": "Mn USD",
     "cashflow": "Mn USD",
     "Financing Requirement": "Mn USD",
+    "Existing Financing Requirement": "Mn USD",
+    "total_financing_requirement": "Mn USD",
     "financing_baseline": "Mn USD",
     "existing_financing_requirement": "Mn USD",
     "financing_requirement_share_of_gdp": "share of GDP",
@@ -181,14 +185,111 @@ def _is_investment_allocation_variable(variable: str) -> bool:
 def _investment_allocation_unit(
     variable: str,
     *,
-    local_currency_code: str = "KES",
-    foreign_currency_code: str = "USD",
+    display_currency: str | None = None,
+    local_currency_code: str | None = None,
+    foreign_currency_code: str | None = None,
 ) -> str:
+    """Unit label for ``local_currency_*`` / ``foreign_currency_*`` columns.
+
+    Prefer MACROECONOMIC **Display Currency** for both prefixes. When unset,
+    fall back to local/foreign codes, then ``USD``.
+    """
     if variable.startswith("local_currency_"):
-        return f"Mn {local_currency_code}"
+        code = display_currency or local_currency_code or "USD"
+        return f"Mn {code}"
     if variable.startswith("foreign_currency_"):
-        return f"Mn {foreign_currency_code}"
+        code = display_currency or foreign_currency_code or "USD"
+        return f"Mn {code}"
     return ""
+
+
+def _allocation_native_currency(
+    variable: str,
+    *,
+    local_currency_code: str | None = None,
+    foreign_currency_code: str | None = None,
+) -> str | None:
+    """Currency the allocation column is denominated in before export conversion."""
+    if variable.startswith("local_currency_"):
+        return local_currency_code
+    if variable.startswith("foreign_currency_"):
+        return foreign_currency_code
+    return None
+
+
+def _convert_allocation_values_to_display(
+    values: list,
+    years: Iterable,
+    *,
+    source_currency: str | None,
+    display_currency: str | None,
+    exchange_rates: Optional[pd.DataFrame],
+) -> list:
+    """Convert allocation amounts from *source_currency* to *display_currency* per year.
+
+    Rates are MACROECONOMIC-style (same units for all currencies, e.g. LCU per USD).
+    Conversion: ``value * display_rate / source_rate``. No-op when currencies match
+    or rates are unavailable.
+    """
+    from MinFin.fx import normalize_currency_code
+
+    if not values:
+        return values
+    src_raw = (source_currency or "").strip()
+    dst_raw = (display_currency or "").strip()
+    if not src_raw or not dst_raw or src_raw == dst_raw:
+        return values
+    if exchange_rates is None or not isinstance(exchange_rates, pd.DataFrame) or exchange_rates.empty:
+        return values
+
+    # Normalize year index so int/float/str year labels all resolve.
+    rates = exchange_rates.copy()
+    try:
+        rates.index = pd.to_numeric(rates.index, errors="coerce")
+        rates = rates[rates.index.notna()]
+        rates.index = rates.index.astype(int)
+    except Exception:
+        rates = exchange_rates
+
+    available = [str(c).strip() for c in rates.columns]
+    rates.columns = available
+    src = normalize_currency_code(src_raw, available)
+    dst = normalize_currency_code(dst_raw, available)
+    if src not in rates.columns or dst not in rates.columns:
+        return values
+    if src == dst:
+        return values
+
+    year_list = list(years) if years is not None else []
+    if len(year_list) < len(values):
+        # Prefer caller-supplied years; if too short/empty, they are unusable for FX.
+        # Caller should pass tech_df.index — fall back to positional only as last resort.
+        year_list = list(year_list) + [None] * (len(values) - len(year_list))
+
+    out: list = []
+    for i, value in enumerate(values):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            out.append(value)
+            continue
+        try:
+            year = int(float(year_list[i]))
+        except (IndexError, TypeError, ValueError):
+            out.append(value)
+            continue
+        if year not in rates.index:
+            out.append(value)
+            continue
+        src_rate = rates.loc[year, src]
+        dst_rate = rates.loc[year, dst]
+        if isinstance(src_rate, pd.Series):
+            src_rate = src_rate.iloc[0]
+        if isinstance(dst_rate, pd.Series):
+            dst_rate = dst_rate.iloc[0]
+        if pd.isna(src_rate) or pd.isna(dst_rate) or float(src_rate) == 0.0:
+            out.append(value)
+            continue
+        out.append(float(value) * float(dst_rate) / float(src_rate))
+    return out
 
 
 def _canonical_variable_name(variable: str) -> str:
@@ -315,12 +416,14 @@ def _variable_unit(
     all_tech_data: Optional[dict] = None,
     tech_name: Optional[str] = None,
     variable_units: Optional[dict[str, str]] = None,
-    local_currency_code: str = "KES",
-    foreign_currency_code: str = "USD",
+    display_currency: str | None = None,
+    local_currency_code: str | None = None,
+    foreign_currency_code: str | None = None,
 ) -> str:
     if _is_investment_allocation_variable(variable):
         return _investment_allocation_unit(
             variable,
+            display_currency=display_currency,
             local_currency_code=local_currency_code,
             foreign_currency_code=foreign_currency_code,
         )
@@ -622,14 +725,20 @@ def build_technology_output_raw_table(
     existing_financing_by_technology: Optional[pd.DataFrame] = None,
     scenario: str = "Net Zero",
     include_unit_dim: bool = True,
-    local_currency_code: str = "KES",
-    foreign_currency_code: str = "USD",
+    display_currency: str | None = None,
+    local_currency_code: str | None = None,
+    foreign_currency_code: str | None = None,
+    exchange_rates: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """Flatten per-technology outputs (inputs + computed) into a long table.
 
     Only variables that are meaningful for a given technology are exported.
     For example, PPA parameters are omitted for technologies without PPA inputs,
     and network purchase-cost fields are limited to Transmission/Distribution/Exports.
+
+    ``local_currency_*`` / ``foreign_currency_*`` amounts are converted to
+    *display_currency* (when set) using *exchange_rates* so ResultValue matches
+    the unit label.
     """
     records: list[dict] = []
     exported: set[tuple[str, str]] = set()
@@ -639,7 +748,10 @@ def build_technology_output_raw_table(
             continue
 
         for variable, source_column in _iter_canonical_tech_columns(tech_df):
-            values = tech_df[source_column].tolist()
+            column_data = tech_df[source_column]
+            if isinstance(column_data, pd.DataFrame):
+                column_data = column_data.iloc[:, -1]
+            values = pd.to_numeric(column_data, errors="coerce").tolist()
             if not _should_export_variable(
                 variable,
                 values,
@@ -650,20 +762,43 @@ def build_technology_output_raw_table(
             ):
                 continue
 
+            row_years = tech_df.index.tolist()
             unit = _variable_unit(
                 variable,
                 all_tech_data=all_tech_data,
                 tech_name=tech_name,
                 variable_units=variable_units,
+                display_currency=display_currency,
                 local_currency_code=local_currency_code,
                 foreign_currency_code=foreign_currency_code,
             )
+            if _is_investment_allocation_variable(variable):
+                unit_code = (
+                    display_currency
+                    or (
+                        local_currency_code
+                        if variable.startswith("local_currency_")
+                        else foreign_currency_code
+                    )
+                    or "USD"
+                )
+                values = _convert_allocation_values_to_display(
+                    values,
+                    row_years,
+                    source_currency=_allocation_native_currency(
+                        variable,
+                        local_currency_code=local_currency_code,
+                        foreign_currency_code=foreign_currency_code,
+                    ),
+                    display_currency=unit_code,
+                    exchange_rates=exchange_rates,
+                )
             _append_records(
                 records,
                 variable=variable,
                 tech_name=tech_name,
                 values=values,
-                years=years if years is not None else tech_df.index.tolist(),
+                years=row_years,
                 scenario=scenario,
                 unit=unit,
                 include_unit_dim=include_unit_dim,
@@ -743,6 +878,7 @@ def build_technology_output_raw_table(
                     all_tech_data=all_tech_data,
                     tech_name=tech_name,
                     variable_units=variable_units,
+                    display_currency=display_currency,
                     local_currency_code=local_currency_code,
                     foreign_currency_code=foreign_currency_code,
                 ),
@@ -875,8 +1011,10 @@ def export_technology_output_workbook(
     existing_financing_by_technology: Optional[pd.DataFrame] = None,
     scenario: str = "Net Zero",
     sheet_name: str = "0.1 Raw data",
-    local_currency_code: str = "KES",
-    foreign_currency_code: str = "USD",
+    display_currency: str | None = None,
+    local_currency_code: str | None = None,
+    foreign_currency_code: str | None = None,
+    exchange_rates: Optional[pd.DataFrame] = None,
 ) -> Path:
     """Write the full per-technology output table (inputs + computed variables)."""
     output_path = Path(output_path)
@@ -895,8 +1033,10 @@ def export_technology_output_workbook(
         technology_financing_summary=technology_financing_summary,
         existing_financing_by_technology=existing_financing_by_technology,
         scenario=scenario,
+        display_currency=display_currency,
         local_currency_code=local_currency_code,
         foreign_currency_code=foreign_currency_code,
+        exchange_rates=exchange_rates,
     )
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
